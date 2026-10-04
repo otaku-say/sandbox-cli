@@ -1,0 +1,51 @@
+# 漂移检查 —— cube-cli × 上游 Python SDK
+#
+# 每周一次 + 手动触发：从 GitHub 拉最新 SDK（清单 tracked_ref，默认 master），
+# 用 AST 比对 scripts/sdk-coverage.json，发现「新增/消失/签名变化」即以非 0 退出。
+#
+# aiod v2 漂移检查（scripts/check-v2-drift.py）需要活体 aiod 网关，CI 里没有，
+# 在沙箱/本机手动跑：
+#   python3 scripts/check-v2-drift.py --base=https://<网关>/sandbox/<sid>/8080
+name: drift-check
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"   # 每周一 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "SDK git ref（分支/tag；留空用清单里的 tracked_ref）"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: cube-cli × CubeSandbox Python SDK 漂移检查（--fetch）
+        run: |
+          set +e
+          python3 scripts/check-sdk-drift.py --fetch ${{ github.event.inputs.ref != '' && format('--ref={0}', github.event.inputs.ref) || '' }} | tee /tmp/drift-output.txt
+          code=${PIPESTATUS[0]}
+          echo "drift_exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: 输出写入 Job Summary
+        if: always()
+        run: |
+          {
+            echo "## cube-cli × CubeSandbox Python SDK 漂移检查"
+            echo ""
+            echo '```'
+            cat /tmp/drift-output.txt 2>/dev/null || echo "（无输出）"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

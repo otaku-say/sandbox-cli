@@ -147,6 +147,37 @@ cd .. && python3 scripts/gen-docs.py --cube cube-cli/zig-out/bin/cube-cli --aio 
 sh tests/help_smoke.sh          # 帮助体系 + new --help 不建沙箱，可重复执行
 ```
 
+### 漂移检查（跟进上游）
+
+两条长期纪律各配一把自动尺，脚本在 `scripts/`（仅 Python 3 标准库）：
+
+| 纪律 | 检查脚本 | 对照的签入清单 |
+|---|---|---|
+| aiod-cli 始终跟随 aiod 的 /v2 API | `scripts/check-v2-drift.py` | `scripts/v2-coverage.json`（74 个 v2 端点 → 命令 / 明确不做+原因） |
+| cube-cli 始终跟随上游 Python SDK | `scripts/check-sdk-drift.py` | `scripts/sdk-coverage.json`（94 个公开方法 → 命令 / 明确不做+原因） |
+
+```bash
+# ① aiod v2 漂移（对活体网关；沙箱内默认 http://127.0.0.1:8080）
+python3 scripts/check-v2-drift.py --base=https://<网关>/sandbox/<sid>/8080
+python3 scripts/check-v2-drift.py --openapi=/path/openapi.json      # 离线快照模式
+
+# ② SDK 漂移（本地 SDK 树，或从 GitHub 拉 tarball；默认跟踪清单里的 tracked_ref=master）
+python3 scripts/check-sdk-drift.py --sdk=/path/to/sdk/python
+python3 scripts/check-sdk-drift.py --fetch          # 想按发布版跟踪：--fetch --ref=v0.7.2
+```
+
+判读输出：
+
+- **① 新增端点/方法**（上游有、清单无）= **需要跟进**：给 CLI 补命令，或把清单条目标 `not-planned` + 原因；
+- **② 消失端点/方法**（清单有、上游无）= 上游删除/改名 → 复核清单；
+- **③ 签名变化**（仅 SDK）= 方法签名变了 → 复核 CLI 参数是否跟随（`--no-signature-check` 可只看增删）；
+- **④ 覆盖统计** = implemented（有命令）/ not-planned（明确不做）计数；
+- **退出码**：0 = 无漂移；1 = 有漂移；2 = 拉取/清单错误 —— 可直接进 CI。
+
+清单只由维护者更新（脚本只报告差异、不自动改清单）。`--json` 拿机器可读结果；
+SDK 检查挂在 `.github/workflows/drift.yml`（每周一 + 手动触发）；v2 检查需要活体 aiod
+（CI 里没有），在沙箱/本机手动跑首条命令。
+
 ## 注意
 
 - **flag 一律 `--key=value` 等号写法**（`--need=code`）；布尔开关直接写 `--flag`。
