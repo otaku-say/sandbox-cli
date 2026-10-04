@@ -157,8 +157,12 @@ fn cmdPtyWs(c: *Ctx, anon: bool, a: util.Args) !void {
         return error.BadBase;
     };
     if (info.tls) {
-        try c.out.print("当前 pty-ws 仅支持 ws://（明文）。wss:// 需要 TLS 握手，尚未实现。\n", .{});
-        try c.out.print("可在沙箱内以 SANDBOX_BASE=http://127.0.0.1:<网关端口> 使用。\n", .{});
+        try c.out.print("wss:// 暂不可用。原因：Zig 0.17.0 的 std.crypto.tls 在握手后写入会卡死，\n", .{});
+        try c.out.print("且 std.posix / std.process.Child 的进程 API 已精简，无法改用 openssl 隧道。\n\n", .{});
+        try c.out.print("替代路径（在沙箱内直连本地回环，效果相同）：\n", .{});
+        try c.out.print("  cube-cli write <sid> <aio-cli-x86_64> /root/aio-cli\n", .{});
+        try c.out.print("  cube-cli exec <sid> 'chmod +x /root/aio-cli; SANDBOX_BASE=http://127.0.0.1:8080 /root/aio-cli pty-ws <会话id> --send=\"...\"'\n\n", .{});
+        try c.out.print("（x86_64 版二进制可从本项目 Release 下载）\n", .{});
         return error.Unsupported;
     }
 

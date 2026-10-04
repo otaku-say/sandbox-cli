@@ -1,0 +1,49 @@
+#!/bin/sh
+# pty-ws-remote —— 从本机附着远端沙箱的 PTY 会话
+#
+# 背景：Zig 0.17.0 的 std.crypto.tls 有缺陷（握手后写入卡死），
+# 且进程 API 被精简到无法改用 openssl 隧道，所以 wss:// 暂不可用。
+# 本脚本走等效路径：把 x86_64 版 aio-cli 传进沙箱，在沙箱内直连本地回环
+# （ws://127.0.0.1:8080），从外部看效果一致。
+#
+# 用法:
+#   pty-ws-remote <sandbox-id> pty-new <会话id>       # 建会话
+#   pty-ws-remote <sandbox-id> pty <会话id> '命令'    # 执行命令
+#   pty-ws-remote <sandbox-id> pty-ws <会话id> --send='命令' --max=6
+#
+# 前置：本机已装 cube-cli（https://github.com/otaku-say/sandbox-cli）
+set -e
+
+SID="$1"; shift
+if [ -z "$SID" ]; then
+    echo "用法: pty-ws-remote <sandbox-id> <aio-cli 子命令与参数...>" >&2
+    exit 1
+fi
+
+CACHE=/tmp/aio-cli-x86_64
+if [ ! -f "$CACHE" ]; then
+    echo "[i] 下载 x86_64 版 aio-cli（首次）..." >&2
+    command -v fixnet >/dev/null 2>&1 && fixnet >/dev/null 2>&1 || true
+    curl -sL --max-time 120 -o "$CACHE" \
+        "https://github.com/otaku-say/sandbox-cli/releases/download/latest/aio-cli-x86_64-linux-musl"
+    chmod +x "$CACHE"
+fi
+LOCAL_SIZE=$(wc -c < "$CACHE" | tr -d ' ')
+
+REMOTE_SIZE=$(cube-cli exec "$SID" 'stat -c %s /root/aio-cli 2>/dev/null || echo 0' 2>/dev/null | tail -1 | tr -d ' \r')
+if [ "$REMOTE_SIZE" != "$LOCAL_SIZE" ]; then
+    echo "[i] 上传 aio-cli（$LOCAL_SIZE 字节）..." >&2
+    cube-cli write "$SID" "$CACHE" /root/aio-cli >/dev/null
+    cube-cli exec "$SID" 'chmod +x /root/aio-cli' >/dev/null
+fi
+
+# 在沙箱内执行：拼一条命令（对参数做最小转义）
+ARGS=""
+for a in "$@"; do
+    case "$a" in
+        *\'*) a=$(printf '%s' "$a" | sed "s/'/'\\\\''/g") ;;
+    esac
+    ARGS="$ARGS '$a'"
+done
+
+exec cube-cli exec "$SID" "SANDBOX_BASE=http://127.0.0.1:8080 /root/aio-cli$ARGS"
