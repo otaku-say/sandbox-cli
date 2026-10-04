@@ -93,9 +93,9 @@ fn usage(out: *std.Io.Writer) !void {
         \\cube-cli (zig) {s} —— CubeSandbox 控制面 CLI
         \\
         \\沙箱:
-        \\  cube-cli new [--need=code|browser|desktop] [--timeout=秒] [--note=名称]
+        \\  cube-cli new [--need=code|browser|desktop] [--timeout=秒] [--note=名称] [--agent=谁] [--task=做什么]
         \\              默认 --need=code（aio-code 沙箱，自带 Zig 工具链）
-        \\  cube-cli ls                    列出沙箱
+        \\  cube-cli ls                    列出沙箱（ID/模板/状态/备注）
         \\  cube-cli rm <sandboxID>        销毁沙箱
         \\  cube-cli exec <sandboxID> <命令...> [--cwd=]
         \\
@@ -147,12 +147,8 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
             timeout_part = try std.fmt.allocPrint(c.arena, ",\"timeout\":{d}", .{n});
         } else |_| {}
     }
-    var note_part: []const u8 = "";
-    if (a.get("note")) |n| {
-        const e = try envd.jsonEscape(c.arena, n);
-        note_part = try std.fmt.allocPrint(c.arena, ",\"metadata\":{{\"note\":\"{s}\"}}", .{e});
-    }
-    const payload = try std.fmt.allocPrint(c.arena, "{{\"templateID\":\"{s}\"{s}{s}}}", .{ tpl, timeout_part, note_part });
+    const meta_part = try buildMetadata(c, a);
+    const payload = try std.fmt.allocPrint(c.arena, "{{\"templateID\":\"{s}\"{s}{s}}}", .{ tpl, timeout_part, meta_part });
 
     const buf = try c.arena.alloc(u8, BUF);
     const res = try c.control(.POST, "/sandboxes", payload, buf);
@@ -178,15 +174,17 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
 fn cmdList(c: *Ctx) !void {
     const buf = try c.arena.alloc(u8, BUF);
     const res = try c.control(.GET, "/sandboxes", null, buf);
-    // 只摘要输出：ID / 模板 / 状态
-    const Field = struct { sandboxID: []const u8 = "", templateID: []const u8 = "", state: []const u8 = "" };
+    const Meta = struct { agent: ?[]const u8 = null, task: ?[]const u8 = null, note: ?[]const u8 = null };
+    const Field = struct { sandboxID: []const u8 = "", templateID: []const u8 = "", state: []const u8 = "", metadata: ?Meta = null };
     const parsed = std.json.parseFromSlice([]Field, c.arena, res.body, .{ .ignore_unknown_fields = true }) catch {
         try c.out.print("{s}\n", .{res.body});
         return;
     };
-    try c.out.print("{s:<34} {s:<34} {s}\n", .{ "沙箱ID", "模板", "状态" });
+    try c.out.print("{s:<34} {s:<34} {s:<10} {s}\n", .{ "沙箱ID", "模板", "状态", "备注" });
     for (parsed.value) |s| {
-        try c.out.print("{s:<34} {s:<34} {s}\n", .{ s.sandboxID, s.templateID, s.state });
+        const meta = s.metadata orelse Meta{};
+        const label = meta.note orelse meta.agent orelse "-";
+        try c.out.print("{s:<34} {s:<34} {s:<10} {s}\n", .{ s.sandboxID, s.templateID, s.state, label });
     }
 }
 
@@ -330,4 +328,25 @@ fn cmdExec(c: *Ctx, args: []const []const u8) !void {
     if (res.stdout.len > 0) try c.out.print("{s}", .{res.stdout});
     if (res.stderr.len > 0) try c.out.print("{s}", .{res.stderr});
     if (res.exit_code != 0) try c.out.print("（exit {d}）\n", .{res.exit_code});
+}
+
+/// 追加一个 metadata 键值（comma=true 时前面补逗号）
+fn addKV(c: *Ctx, out: []const u8, k: []const u8, v: []const u8, comma: bool) ![]const u8 {
+    const e = try envd.jsonEscape(c.arena, v);
+    return try std.fmt.allocPrint(c.arena, "{s}{s}\"{s}\":\"{s}\"", .{ out, if (comma) "," else "", k, e });
+}
+
+
+/// 组装 metadata：agent（谁开的）/ task（做什么）/ note（显示名）
+/// 缺省取环境变量 CUBESANDBOX_AGENT_NAME，保证任何沙箱都能溯源；admin WebUI 会逐条渲染这些字段。
+fn buildMetadata(c: *Ctx, a: util.Args) ![]const u8 {
+    const agent = a.get("agent") orelse cfg.getenv("CUBESANDBOX_AGENT_NAME") orelse "cube-cli";
+    const task = a.get("task");
+    const note = a.get("note") orelse (if (task) |t| try std.fmt.allocPrint(c.arena, "{s} · {s}", .{ agent, t }) else agent);
+    var out: []const u8 = "";
+    if (task) |t| out = try addKV(c, out, "task", t, false);
+    out = try addKV(c, out, "agent", agent, out.len > 0);
+    out = try addKV(c, out, "note", note, true);
+    out = try addKV(c, out, "cli", "cube-cli", true);
+    return try std.fmt.allocPrint(c.arena, ",\"metadata\":{{{s}}}", .{out});
 }
