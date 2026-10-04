@@ -188,6 +188,32 @@ fn cmdExec(c: *Ctx, args: []const []const u8) !void {
     const sid = a.pos[0];
     const command = a.joinFrom(1, " ");
 
+    // 环境变量注入：--env=K=V 直接给值；--env=NAME 从本机环境读同名变量
+    // （对齐旧 Go 版 envpush 的用法，避免在命令行里出现明文敏感值）
+    var envs_json: []const u8 = "";
+    {
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 32 << 10));
+        var first = true;
+        for (a.flags) |kv| {
+            if (!std.mem.eql(u8, kv[0], "env")) continue;
+            var name: []const u8 = kv[1];
+            var value: []const u8 = "";
+            if (std.mem.indexOfScalar(u8, kv[1], '=')) |i| {
+                name = kv[1][0..i];
+                value = kv[1][i + 1 ..];
+            } else {
+                const z = try c.arena.allocSentinel(u8, kv[1].len, 0);
+                @memcpy(z[0..kv[1].len], kv[1]);
+                const p = std.c.getenv(z.ptr) orelse continue;
+                value = std.mem.span(p);
+            }
+            if (!first) try w.print(",", .{});
+            first = false;
+            try w.print("\"{s}\":\"{s}\"", .{ name, try envd.jsonEscape(c.arena, value) });
+        }
+        envs_json = w.buffered();
+    }
+
     const buf = try c.arena.alloc(u8, BUF);
     const token = try c.connectToken(sid, buf);
     const envd_base = try c.envdBase(sid);
@@ -197,7 +223,7 @@ fn cmdExec(c: *Ctx, args: []const []const u8) !void {
         if (std.fmt.parseInt(u64, t, 10)) |n| timeout_ms = n * 1000 else |_| {}
     }
 
-    const res = try envd.exec(c.arena, c.client, envd_base, token, null, command, a.get("cwd"), null, timeout_ms, buf);
+    const res = try envd.exec(c.arena, c.client, envd_base, token, null, command, a.get("cwd"), if (envs_json.len > 0) envs_json else null, timeout_ms, buf);
     if (res.stdout.len > 0) try c.out.print("{s}", .{res.stdout});
     if (res.stderr.len > 0) try c.out.print("{s}", .{res.stderr});
     if (res.exit_code != 0) try c.out.print("（exit {d}）\n", .{res.exit_code});
