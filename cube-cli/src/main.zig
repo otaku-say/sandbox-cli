@@ -13,6 +13,7 @@ const util = @import("util.zig");
 const cmd_template = @import("cmd_template.zig");
 const cmd_ports = @import("cmd_ports.zig");
 const cmd_files = @import("cmd_files.zig");
+const cmd_lifecycle = @import("cmd_lifecycle.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -75,6 +76,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (try cmd_template.dispatch(&ctx, cmd, args)) return;
     if (try cmd_ports.dispatch(&ctx, cmd, args)) return;
     if (try cmd_files.dispatch(&ctx, cmd, args)) return;
+    if (try cmd_lifecycle.dispatch(&ctx, cmd, args)) return;
 
     try out.print("未知命令: {s}\n\n", .{cmd});
     try usage(out);
