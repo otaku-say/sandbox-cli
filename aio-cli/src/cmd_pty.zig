@@ -14,7 +14,9 @@
 //! 此时再 exec 会被拒（Session already has a running command），可用 pty-screen 看进度；
 //! signal 会把会话进程终止（会话随后从列表消失）。
 //!
-//! pty-ws（WebSocket 附着）需要手写 WS 客户端，当前版本未实现。
+//! pty-ws / pty-ws-anon（WebSocket 附着）：ws://（明文）与 wss://（在 socket
+//! 之上套手写 TLS 1.3 客户端 tls13.zig，无 fork / 无 openssl）。
+//! wss 下默认做证书主机名校验；自签证书调试可用 -k / --insecure 跳过。
 const std = @import("std");
 const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
@@ -146,7 +148,9 @@ fn parseBase(base: []const u8) !BaseInfo {
     return .{ .host = host, .port = port, .path_prefix = path_prefix, .tls = tls };
 }
 
-/// pty-ws <会话id> [--send=文本] [--max=条数]
+/// pty-ws <会话id> [--send=文本] [--max=条数] [--raw] [--insecure|-k]
+///
+/// SANDBOX_BASE 为 https:// 时自动走 wss://（TLS 1.3 手写实现）。
 fn cmdPtyWs(c: *Ctx, anon: bool, a: util.Args) !void {
     if (!anon) {
         _ = a.at(0) orelse return error.MissingArg;
@@ -156,15 +160,6 @@ fn cmdPtyWs(c: *Ctx, anon: bool, a: util.Args) !void {
         try c.out.print("无法解析 SANDBOX_BASE: {s}\n", .{c.base});
         return error.BadBase;
     };
-    if (info.tls) {
-        try c.out.print("wss:// 暂不可用。原因：Zig 0.17.0 的 std.crypto.tls 在握手后写入会卡死，\n", .{});
-        try c.out.print("且 std.posix / std.process.Child 的进程 API 已精简，无法改用 openssl 隧道。\n\n", .{});
-        try c.out.print("替代路径（在沙箱内直连本地回环，效果相同）：\n", .{});
-        try c.out.print("  cube-cli write <sid> <aio-cli-x86_64> /root/aio-cli\n", .{});
-        try c.out.print("  cube-cli exec <sid> 'chmod +x /root/aio-cli; SANDBOX_BASE=http://127.0.0.1:8080 /root/aio-cli pty-ws <会话id> --send=\"...\"'\n\n", .{});
-        try c.out.print("（x86_64 版二进制可从本项目 Release 下载）\n", .{});
-        return error.Unsupported;
-    }
 
     const ws_path = if (anon)
         try std.fmt.allocPrint(c.arena, "{s}/v2/pty/ws?protocol=json", .{info.path_prefix})
@@ -173,7 +168,12 @@ fn cmdPtyWs(c: *Ctx, anon: bool, a: util.Args) !void {
 
     const host_header = try std.fmt.allocPrint(c.arena, "{s}:{d}", .{ info.host, info.port });
 
-    var conn = ws.dial(c.io, info.host, info.port, ws_path, host_header) catch |e| {
+    // -k / --insecure：跳过证书主机名校验（仅 wss:// 生效；自签证书调试用）
+    const insecure = a.has("insecure") or hasShortFlag(a, "-k");
+    var conn = ws.dial(c.io, info.host, info.port, ws_path, host_header, .{
+        .tls = info.tls,
+        .insecure = insecure,
+    }) catch |e| {
         try c.out.print("WebSocket 连接失败: {t}\n", .{e});
         return e;
     };
@@ -270,6 +270,14 @@ fn extractJSONData(arena: std.mem.Allocator, payload: []const u8) ?[]const u8 {
 
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
+}
+
+/// 短选项 `-k`：现有 Args 解析只把 `--x` 收进 flags，`-k` 会落在 pos。
+fn hasShortFlag(a: util.Args, flag: []const u8) bool {
+    for (a.pos) |p| {
+        if (std.mem.eql(u8, p, flag)) return true;
+    }
+    return false;
 }
 
 pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {

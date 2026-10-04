@@ -494,15 +494,18 @@ pub const table = [_]Entry{
         .group = 3,
         .brief = "WebSocket 附着到 PTY 会话（非交互）",
         .detail =
-        \\用途:  ws://…/v2/pty/sessions/<id>/ws?protocol=json 附着；读到 --max 条就退出。
-        \\用法:  aio-cli pty-ws <会话id> [--send=<文本>] [--max=<条数>] [--raw]
+        \\用途:  ws(s)://…/v2/pty/sessions/<id>/ws?protocol=json 附着；读到 --max 条就退出。
+        \\       SANDBOX_BASE 为 https:// 时自动走 wss://（手写 TLS 1.3，无 openssl）。
+        \\用法:  aio-cli pty-ws <会话id> [--send=<文本>] [--max=<条数>] [--raw] [--insecure|-k]
         \\参数:  --send=   服务端 ready 之后自动发送这段文本。
         \\       --max=    收满 N 条退出，默认 5。
         \\       --raw     输出原始帧，不做加工。
+        \\       -k / --insecure
+        \\                 跳过证书主机名校验（仅 wss://；自签证书调试用）。
         \\示例:  aio-cli pty-ws t1 --send='echo attached' --max=6
-        \\注意:  只支持 ws://（Zig 0.17 标准库缺 TLS/进程能力）；SANDBOX_BASE 是 https 时会给出
-        \\       「把二进制搬进沙箱、用 SANDBOX_BASE=http://127.0.0.1:8080」的替代方案。
-        \\       同一会话一次只允许一个 WS 连接，异常断开后要换会话名或等服务端超时。
+        \\注意:  wss 默认校验证书主机名（含 IP SAN）并做 CertificateVerify 验签；
+        \\       完整证书链验证暂未实现。同一会话一次只允许一个 WS 连接，异常断开后要
+        \\       换会话名或等服务端超时。
         ,
     },
     .{
@@ -510,11 +513,12 @@ pub const table = [_]Entry{
         .group = 3,
         .brief = "匿名 WebShell 附着",
         .detail =
-        \\用途:  ws://…/v2/pty/ws?protocol=json，不绑定具体会话。
-        \\用法:  aio-cli pty-ws-anon [--max=<条数>] [--send=<文本>] [--raw]
+        \\用途:  ws(s)://…/v2/pty/ws?protocol=json，不绑定具体会话。
+        \\       SANDBOX_BASE 为 https:// 时自动走 wss://（手写 TLS 1.3）。
+        \\用法:  aio-cli pty-ws-anon [--max=<条数>] [--send=<文本>] [--raw] [--insecure|-k]
         \\参数:  同 pty-ws，但没有 <会话id> 位置参数。
         \\示例:  aio-cli pty-ws-anon --max=3
-        \\注意:  同 pty-ws，仅支持 ws://。
+        \\注意:  同 pty-ws。
         ,
     },
 
