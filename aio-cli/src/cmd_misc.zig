@@ -85,6 +85,11 @@ fn cmdCodeSess(c: *Ctx, cmd: []const u8, a: util.Args) !void {
         try getJ(c, "/v2/code/sessions");
         return;
     }
+    if (std.mem.eql(u8, cmd, "code-sess-get")) {
+        const id = a.at(0) orelse return error.MissingArg;
+        try getJ(c, try std.fmt.allocPrint(c.arena, "/v2/code/sessions/{s}", .{id}));
+        return;
+    }
     if (std.mem.eql(u8, cmd, "code-sess-new")) {
         const body = try std.fmt.allocPrint(c.arena, "{{\"language\":\"{s}\"}}", .{a.get("lang") orelse "python"});
         try postJ(c, "/v2/code/sessions", body);
@@ -100,6 +105,20 @@ fn cmdCodeSess(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     }
 }
 
+/// 输出 JSON 字符串数组字段："key":["a","b"]（逗号分隔输入）。
+fn writeStrArray(w: *std.Io.Writer, c: *Ctx, key: []const u8, spec: []const u8) !void {
+    try w.print(",\"{s}\":[", .{key});
+    var it = std.mem.splitScalar(u8, spec, ',');
+    var first = true;
+    while (it.next()) |p| {
+        if (p.len == 0) continue;
+        if (!first) try w.print(",", .{});
+        try w.print("\"{s}\"", .{try util.jsonEscape(c.arena, p)});
+        first = false;
+    }
+    try w.print("]", .{});
+}
+
 /// watch <path> [--recursive] [--debounce=毫秒] / watch-poll <id> / watch-rm <id>
 fn cmdWatch(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     if (std.mem.eql(u8, cmd, "watch")) {
@@ -108,6 +127,8 @@ fn cmdWatch(c: *Ctx, cmd: []const u8, a: util.Args) !void {
         try w.print("{{\"path\":\"{s}\"", .{try util.jsonEscape(c.arena, path)});
         if (a.has("recursive")) try w.print(",\"recursive\":true", .{});
         if (a.get("debounce")) |d| try w.print(",\"debounce\":{s}", .{d});
+        if (a.get("exclude")) |v| try writeStrArray(&w, c, "exclude", v);
+        if (a.get("include")) |v| try writeStrArray(&w, c, "include_patterns", v);
         try w.print("}}", .{});
         try postJ(c, "/v2/watch", w.buffered());
         return;
@@ -115,7 +136,19 @@ fn cmdWatch(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     const id = a.at(0) orelse return error.MissingArg;
     const path = try std.fmt.allocPrint(c.arena, "/v2/watch/{s}", .{id});
     if (std.mem.eql(u8, cmd, "watch-poll")) {
-        try getJ(c, path);
+        // 正确路由是 GET /v2/watch/<id>/poll（/watch/<id> 实测 405）；
+        // 支持 --cursor= / --limit= / --timeout=（服务端长轮询）。
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 512));
+        try w.print("/v2/watch/{s}/poll", .{id});
+        const keys = [_][]const u8{ "cursor", "limit", "timeout" };
+        var first = true;
+        for (keys) |k| {
+            if (a.get(k)) |v| {
+                try w.print("{s}{s}={s}", .{ if (first) "?" else "&", k, v });
+                first = false;
+            }
+        }
+        try getJ(c, w.buffered());
         return;
     }
     if (std.mem.eql(u8, cmd, "watch-rm")) {
@@ -188,12 +221,18 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         try cmdCode(c, a);
         return true;
     }
-    if (eq(cmd, "code-info") or eq(cmd, "code-sess-ls") or eq(cmd, "code-sess-new") or eq(cmd, "code-sess-rm")) {
+    if (eq(cmd, "code-info") or eq(cmd, "code-sess-ls") or eq(cmd, "code-sess-new") or
+        eq(cmd, "code-sess-rm") or eq(cmd, "code-sess-get"))
+    {
         try cmdCodeSess(c, cmd, a);
         return true;
     }
     if (eq(cmd, "watch") or eq(cmd, "watch-poll") or eq(cmd, "watch-rm")) {
         try cmdWatch(c, cmd, a);
+        return true;
+    }
+    if (eq(cmd, "watch-ls")) {
+        try getJ(c, "/v2/watch");
         return true;
     }
     if (eq(cmd, "watch-events")) {

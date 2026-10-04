@@ -63,6 +63,51 @@ fn printOut(c: *Ctx, out: ?[]const u8, err: ?[]const u8) !void {
     }
 }
 
+/// 把 --env=K=V,K2=V2 解析成 JSON 对象（aiod 的 env 字段是 object，不是数组/字符串）。
+/// 同名后者覆盖前者；空段跳过；无 `=` 视为空串值。
+fn writeEnv(w: *std.Io.Writer, c: *Ctx, spec: []const u8) !void {
+    var n: usize = 0;
+    {
+        var it = std.mem.splitScalar(u8, spec, ',');
+        while (it.next()) |kv| {
+            if (kv.len > 0) n += 1;
+        }
+    }
+    if (n == 0) return;
+    const pairs = try c.arena.alloc([2][]const u8, n);
+    var m: usize = 0;
+    var it = std.mem.splitScalar(u8, spec, ',');
+    while (it.next()) |kv| {
+        if (kv.len == 0) continue;
+        var k: []const u8 = kv;
+        var v: []const u8 = "";
+        if (std.mem.indexOfScalar(u8, kv, '=')) |i| {
+            k = kv[0..i];
+            v = kv[i + 1 ..];
+        }
+        if (k.len == 0) continue;
+        var replaced = false;
+        for (pairs[0..m]) |*p| {
+            if (std.mem.eql(u8, p[0], k)) {
+                p.* = .{ k, v }; // 同名后者覆盖
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            pairs[m] = .{ k, v };
+            m += 1;
+        }
+    }
+    if (m == 0) return;
+    try w.print(",\"env\":{{", .{});
+    for (pairs[0..m], 0..) |p, i| {
+        if (i > 0) try w.print(",", .{});
+        try w.print("\"{s}\":\"{s}\"", .{ try util.jsonEscape(c.arena, p[0]), try util.jsonEscape(c.arena, p[1]) });
+    }
+    try w.print("}}", .{});
+}
+
 /// 组装 POST /v2/commands 的 body。
 fn runBody(c: *Ctx, a: util.Args, command: []const u8, mode: ?[]const u8) ![]const u8 {
     const buf = try c.arena.alloc(u8, BODY);
@@ -75,7 +120,10 @@ fn runBody(c: *Ctx, a: util.Args, command: []const u8, mode: ?[]const u8) ![]con
             try w.print(",\"{s}\":\"{s}\"", .{ k, try util.jsonEscape(c.arena, v) });
         }
     }
+    if (a.get("env")) |v| try writeEnv(&w, c, v);
     if (a.get("timeout")) |v| try w.print(",\"timeout\":{s}", .{v});
+    if (a.get("hard-timeout")) |v| try w.print(",\"hard_timeout\":{s}", .{v});
+    if (a.get("args")) |v| try w.print(",\"args\":{s}", .{v});
     if (a.get("max-output")) |v| try w.print(",\"max_output_length\":{s}", .{v});
     try w.print("}}", .{});
     return w.buffered();
@@ -96,6 +144,14 @@ fn cmdExecInner(c: *Ctx, a: util.Args) !void {
         }
         if (a.get("stderr-offset")) |v| {
             const s = try std.fmt.bufPrint(qbuf[qn..], "{s}stderr_offset={s}", .{ if (qn > 0) "&" else "", v });
+            qn += s.len;
+        }
+        if (a.has("wait")) {
+            const s = try std.fmt.bufPrint(qbuf[qn..], "{s}wait=true", .{if (qn > 0) "&" else ""});
+            qn += s.len;
+        }
+        if (a.get("wait-timeout")) |v| {
+            const s = try std.fmt.bufPrint(qbuf[qn..], "{s}wait_timeout={s}", .{ if (qn > 0) "&" else "", v });
             qn += s.len;
         }
         const q: []const u8 = if (qn > 0) qbuf[0..qn] else "";
@@ -176,7 +232,8 @@ fn cmdLog(c: *Ctx, a: util.Args) !void {
 
         const status = asStr(v, "status") orelse "";
         const done = std.mem.eql(u8, status, "completed") or std.mem.eql(u8, status, "failed") or
-            std.mem.eql(u8, status, "killed") or std.mem.eql(u8, status, "exited");
+            std.mem.eql(u8, status, "killed") or std.mem.eql(u8, status, "exited") or
+            std.mem.eql(u8, status, "timed_out");
         if (done or !follow or rounds > 600) break;
         rounds += 1;
         std.Io.sleep(c.io, .fromMilliseconds(500), .awake) catch {};
@@ -218,6 +275,8 @@ fn cmdSess(c: *Ctx, cmd: []const u8, a: util.Args) !void {
         var w = std.Io.Writer.fixed(try c.arena.alloc(u8, BODY));
         try w.print("{{\"id\":\"{s}\"", .{try util.jsonEscape(c.arena, id)});
         if (a.get("cwd")) |v| try w.print(",\"cwd\":\"{s}\"", .{try util.jsonEscape(c.arena, v)});
+        if (a.get("env")) |v| try writeEnv(&w, c, v);
+        if (a.get("user")) |v| try w.print(",\"user\":\"{s}\"", .{try util.jsonEscape(c.arena, v)});
         try w.print("}}", .{});
         const res = try httpc.postJson(c.client, try c.url("/v2/commands/sessions"), try jsonAuth(c), w.buffered(), buf);
         if (!res.ok()) return errOut(c, res);
