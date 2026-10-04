@@ -64,13 +64,19 @@ fn postJ(c: *Ctx, path: []const u8, body: []const u8) !void {
     try c.out.print("{s}\n", .{res.body});
 }
 
-/// br-go <url> [--wait=load|domcontentloaded|networkidle] [--timeout=秒]
+/// br-go <url> [--wait=load|domcontentloaded|networkidle] [--timeout=秒] [--tab=<id>]
+/// br-go --history=back|forward|reload [--tab=<id>]
 fn cmdGo(c: *Ctx, a: util.Args) !void {
-    const url = a.at(0) orelse return error.MissingArg;
     var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 32 << 10));
-    try w.print("{{\"url\":\"{s}\"", .{try util.jsonEscape(c.arena, url)});
-    if (a.get("wait")) |v| try w.print(",\"wait_until\":\"{s}\"", .{v});
+    if (a.get("history")) |h| {
+        try w.print("{{\"history\":\"{s}\"", .{try util.jsonEscape(c.arena, h)});
+    } else {
+        const url = a.at(0) orelse return error.MissingArg;
+        try w.print("{{\"url\":\"{s}\"", .{try util.jsonEscape(c.arena, url)});
+    }
+    if (a.get("wait")) |v| try w.print(",\"wait_until\":\"{s}\"", .{try util.jsonEscape(c.arena, v)});
     if (a.get("timeout")) |v| try w.print(",\"timeout\":{s}", .{v});
+    if (a.get("tab")) |v| try w.print(",\"tab_id\":\"{s}\"", .{try util.jsonEscape(c.arena, v)});
     try w.print("}}", .{});
     try postJ(c, "/v2/browser/navigate", w.buffered());
 }
@@ -110,20 +116,36 @@ fn cmdEval(c: *Ctx, a: util.Args) !void {
     try postJ(c, "/v2/browser/evaluate", w.buffered());
 }
 
-/// br-click --selector=<css>  |  br-fill --selector= --value=
+/// br-click (--selector=<css> | --ref=<快照ref>) [--tab=<id>]
+/// br-fill  (--selector=<css> | --ref=<快照ref>) --value=<文本> [--tab=<id>]
 fn cmdClickFill(c: *Ctx, cmd: []const u8, a: util.Args) !void {
-    const sel = a.get("selector") orelse return error.MissingArg;
+    const sel = a.get("selector");
+    const rf = a.get("ref");
+    if (sel == null and rf == null) return error.MissingArg;
     var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 32 << 10));
-    if (std.mem.eql(u8, cmd, "br-click")) {
-        try w.print("{{\"selector\":\"{s}\"}}", .{try util.jsonEscape(c.arena, sel)});
-        try postJ(c, "/v2/browser/click", w.buffered());
-    } else {
-        const val = a.get("value") orelse "";
-        try w.print("{{\"selector\":\"{s}\",\"value\":\"{s}\"}}", .{
-            try util.jsonEscape(c.arena, sel), try util.jsonEscape(c.arena, val),
-        });
-        try postJ(c, "/v2/browser/fill", w.buffered());
+    try w.print("{{", .{});
+    var first = true;
+    if (sel) |s| {
+        try w.print("\"selector\":\"{s}\"", .{try util.jsonEscape(c.arena, s)});
+        first = false;
     }
+    if (rf) |r| {
+        if (!first) try w.print(",", .{});
+        try w.print("\"ref\":\"{s}\"", .{try util.jsonEscape(c.arena, r)});
+        first = false;
+    }
+    if (!std.mem.eql(u8, cmd, "br-click")) {
+        const val = a.get("value") orelse "";
+        if (!first) try w.print(",", .{});
+        try w.print("\"value\":\"{s}\"", .{try util.jsonEscape(c.arena, val)});
+        first = false;
+    }
+    if (a.get("tab")) |t| {
+        if (!first) try w.print(",", .{});
+        try w.print("\"tab_id\":\"{s}\"", .{try util.jsonEscape(c.arena, t)});
+    }
+    try w.print("}}", .{});
+    try postJ(c, if (std.mem.eql(u8, cmd, "br-click")) "/v2/browser/click" else "/v2/browser/fill", w.buffered());
 }
 
 /// br-snapshot [--interactive]
@@ -285,7 +307,17 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         return true;
     }
     if (eq(cmd, "br-network")) {
-        try getJ(c, "/v2/browser/network/requests");
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 256));
+        try w.print("/v2/browser/network/requests", .{});
+        var first = true;
+        if (a.get("limit")) |v| {
+            try w.print("?limit={s}", .{v});
+            first = false;
+        }
+        if (a.has("clear")) {
+            try w.print("{s}clear=true", .{if (first) "?" else "&"});
+        }
+        try getJ(c, w.buffered());
         return true;
     }
     if (eq(cmd, "br-info")) {
@@ -293,7 +325,13 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         return true;
     }
     if (eq(cmd, "br-config")) {
-        if (a.get("json")) |j| {
+        if (a.get("resolution")) |v| {
+            // WxH（如 1280x800）→ {"resolution":{"width":W,"height":H}}
+            const xi = std.mem.indexOfScalar(u8, v, 'x') orelse
+                std.mem.indexOfScalar(u8, v, 'X') orelse return error.BadArg;
+            const body = try std.fmt.allocPrint(c.arena, "{{\"resolution\":{{\"width\":{s},\"height\":{s}}}}}", .{ v[0..xi], v[xi + 1 ..] });
+            try postJ(c, "/v2/browser/config", body);
+        } else if (a.get("json")) |j| {
             try postJ(c, "/v2/browser/config", j);
         } else {
             try getJ(c, "/v2/browser/config");
@@ -305,6 +343,8 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 32 << 10));
         try w.print("{{\"method\":\"{s}\"", .{try util.jsonEscape(c.arena, method)});
         if (a.get("params")) |p| try w.print(",\"params\":{s}", .{p});
+        if (a.has("browser")) try w.print(",\"browser\":true", .{});
+        if (a.get("tab")) |t| try w.print(",\"tab_id\":\"{s}\"", .{try util.jsonEscape(c.arena, t)});
         try w.print("}}", .{});
         try postJ(c, "/v2/browser/cdp", w.buffered());
         return true;

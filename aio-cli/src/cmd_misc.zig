@@ -105,6 +105,20 @@ fn cmdCodeSess(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     }
 }
 
+/// 输出 JSON 字符串数组字段："key":["a","b"]（逗号分隔输入）。
+fn writeStrArray(w: *std.Io.Writer, c: *Ctx, key: []const u8, spec: []const u8) !void {
+    try w.print(",\"{s}\":[", .{key});
+    var it = std.mem.splitScalar(u8, spec, ',');
+    var first = true;
+    while (it.next()) |p| {
+        if (p.len == 0) continue;
+        if (!first) try w.print(",", .{});
+        try w.print("\"{s}\"", .{try util.jsonEscape(c.arena, p)});
+        first = false;
+    }
+    try w.print("]", .{});
+}
+
 /// watch <path> [--recursive] [--debounce=毫秒] / watch-poll <id> / watch-rm <id>
 fn cmdWatch(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     if (std.mem.eql(u8, cmd, "watch")) {
@@ -113,6 +127,8 @@ fn cmdWatch(c: *Ctx, cmd: []const u8, a: util.Args) !void {
         try w.print("{{\"path\":\"{s}\"", .{try util.jsonEscape(c.arena, path)});
         if (a.has("recursive")) try w.print(",\"recursive\":true", .{});
         if (a.get("debounce")) |d| try w.print(",\"debounce\":{s}", .{d});
+        if (a.get("exclude")) |v| try writeStrArray(&w, c, "exclude", v);
+        if (a.get("include")) |v| try writeStrArray(&w, c, "include_patterns", v);
         try w.print("}}", .{});
         try postJ(c, "/v2/watch", w.buffered());
         return;

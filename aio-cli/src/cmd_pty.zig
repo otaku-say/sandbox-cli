@@ -68,6 +68,8 @@ fn cmdNew(c: *Ctx, a: util.Args) !void {
     if (a.get("cols")) |v| try w.print(",\"cols\":{s}", .{v});
     if (a.get("rows")) |v| try w.print(",\"rows\":{s}", .{v});
     if (a.get("retention")) |v| try w.print(",\"retention\":\"{s}\"", .{v});
+    if (a.get("user")) |v| try w.print(",\"user\":\"{s}\"", .{try util.jsonEscape(c.arena, v)});
+    if (a.get("no-change-timeout")) |v| try w.print(",\"no_change_timeout\":{s}", .{v});
     try w.print("}}", .{});
     const buf = try c.arena.alloc(u8, BUF);
     const res = try httpc.postJson(c.client, try c.url("/v2/pty/sessions"), try jsonAuth(c), w.buffered(), buf);
@@ -86,6 +88,8 @@ fn cmdExec(c: *Ctx, a: util.Args) !void {
     try w.print("{{\"command\":\"{s}\"", .{try util.jsonEscape(c.arena, cmd_txt)});
     if (a.get("timeout")) |v| try w.print(",\"timeout\":{s}", .{v});
     if (a.has("async")) try w.print(",\"async\":true", .{});
+    if (a.get("hard-timeout")) |v| try w.print(",\"hard_timeout\":{s}", .{v});
+    if (a.get("no-change-timeout")) |v| try w.print(",\"no_change_timeout\":{s}", .{v});
     try w.print("}}", .{});
 
     const path = try std.fmt.allocPrint(c.arena, "/v2/pty/sessions/{s}/exec", .{id});
@@ -166,10 +170,16 @@ fn cmdPtyWs(c: *Ctx, anon: bool, a: util.Args) !void {
         return error.Unsupported;
     }
 
-    const ws_path = if (anon)
-        try std.fmt.allocPrint(c.arena, "{s}/v2/pty/ws?protocol=json", .{info.path_prefix})
-    else
-        try std.fmt.allocPrint(c.arena, "{s}/v2/pty/sessions/{s}/ws?protocol=json", .{ info.path_prefix, a.at(0).? });
+    var wq = std.Io.Writer.fixed(try c.arena.alloc(u8, 1024));
+    if (anon) {
+        try wq.print("{s}/v2/pty/ws?protocol=json", .{info.path_prefix});
+    } else {
+        try wq.print("{s}/v2/pty/sessions/{s}/ws?protocol=json", .{ info.path_prefix, a.at(0).? });
+    }
+    if (a.has("durable")) try wq.print("&durable=true", .{});
+    if (a.has("restore")) try wq.print("&restore=true", .{});
+    if (a.get("replay-bytes")) |v| try wq.print("&replay_bytes={s}", .{v});
+    const ws_path = wq.buffered();
 
     const host_header = try std.fmt.allocPrint(c.arena, "{s}:{d}", .{ info.host, info.port });
 
@@ -326,6 +336,11 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         if (a.get("rows")) |v| {
             if (!first) try w.print(",", .{});
             try w.print("\"rows\":{s}", .{v});
+            first = false;
+        }
+        if (a.get("no-change-timeout")) |v| {
+            if (!first) try w.print(",", .{});
+            try w.print("\"no_change_timeout\":{s}", .{v});
         }
         try w.print("}}", .{});
         try cmdSend(c, try std.fmt.allocPrint(c.arena, "/v2/pty/sessions/{s}", .{id}), w.buffered(), .PATCH);

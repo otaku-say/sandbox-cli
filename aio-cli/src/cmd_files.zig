@@ -158,7 +158,10 @@ fn cmdGet(c: *Ctx, a: util.Args) !void {
 
 fn cmdMkdir(c: *Ctx, a: util.Args) !void {
     const path = a.at(0) orelse return error.MissingArg;
-    const body = try std.fmt.allocPrint(c.arena, "{{\"path\":\"{s}\"}}", .{try util.jsonEscape(c.arena, path)});
+    const body = if (a.has("parents"))
+        try std.fmt.allocPrint(c.arena, "{{\"path\":\"{s}\",\"parents\":true}}", .{try util.jsonEscape(c.arena, path)})
+    else
+        try std.fmt.allocPrint(c.arena, "{{\"path\":\"{s}\"}}", .{try util.jsonEscape(c.arena, path)});
     try postJSON(c, "/v2/fs/mkdir", body);
 }
 
@@ -568,7 +571,11 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     }
     if (eq(cmd, "stat")) {
         const path = a.at(0) orelse return error.MissingArg;
-        try getJSON(c, try queryPath(c, "/v2/fs/stat", path, a.get("user")));
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 1024));
+        try w.print("/v2/fs/stat?path={s}", .{try urlEncode(c.arena, path)});
+        if (a.get("user")) |u| try w.print("&user={s}", .{try urlEncode(c.arena, u)});
+        if (a.has("follow-symlinks")) try w.print("&follow_symlinks=true", .{});
+        try getJSON(c, w.buffered());
         return true;
     }
     // tree：解析 tar 输出版
