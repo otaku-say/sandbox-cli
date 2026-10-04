@@ -47,7 +47,10 @@ pub const Conn = struct {
             }
             if (self.rlen >= self.rbuf.len) return error.FrameTooLarge;
             const fd = self.stream.socket.handle;
-            const n = std.posix.read(fd, self.rbuf[self.rlen..]) catch |e| return e;
+            const n = std.posix.read(fd, self.rbuf[self.rlen..]) catch |e| {
+                std.debug.print("[diag] posix.read err: {t}\n", .{e});
+                return e;
+            };
             if (n == 0) return error.ConnectionClosed;
             self.rlen += n;
         }
@@ -140,7 +143,10 @@ fn writeAll(io: std.Io, stream: std.Io.net.Stream, data: []const u8) !void {
         // 0.17.0 的 std.posix 没有 write（只有 read），直接走系统调用
         const rc = std.os.linux.write(fd, data.ptr + off, data.len - off);
         const signed: isize = @bitCast(rc);
-        if (signed <= 0) return error.WriteFailed;
+        if (signed <= 0) {
+            std.debug.print("[diag] linux.write rc={d} (off={d} len={d})\n", .{ signed, off, data.len });
+            return error.WriteFailed;
+        }
         off += @intCast(signed);
     }
 }

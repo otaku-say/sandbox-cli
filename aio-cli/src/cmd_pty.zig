@@ -173,7 +173,6 @@ fn cmdPtyWs(c: *Ctx, anon: bool, a: util.Args) !void {
         try c.out.print("WebSocket 连接失败: {t}\n", .{e});
         return e;
     };
-    defer conn.close();
     std.debug.print("[ws] connected, path={s}\n", .{ws_path});
 
     // 发送时机：等服务端发出 ready 之后再发，否则会被直接断开
@@ -220,6 +219,7 @@ fn cmdPtyWs(c: *Ctx, anon: bool, a: util.Args) !void {
                 } else |_| {
                     try c.out.print("[{s}]\n", .{frame.payload});
                 }
+                try c.out.flush();
                 got += 1;
                 if (pending_send != null and std.mem.indexOf(u8, frame.payload, "\"ready\"") != null) {
                     const line = try std.fmt.allocPrint(c.arena, "{{\"type\":\"input\",\"data\":\"{s}\"}}", .{try util.jsonEscape(c.arena, pending_send.?)});
@@ -232,12 +232,18 @@ fn cmdPtyWs(c: *Ctx, anon: bool, a: util.Args) !void {
             },
             ws.OP_BINARY => {
                 try c.out.print("{s}", .{frame.payload});
+                try c.out.flush();
                 got += 1;
             },
             else => {},
         }
     }
     try c.out.print("\n", .{});
+
+    // 礼貌关闭：发 close 帧再断开。否则服务端会保留半开连接，
+    // 导致"下一次附着无响应"（这正是之前 --send 时序问题的真因）。
+    conn.sendFrame(ws.OP_CLOSE, "") catch {};
+    conn.close();
 }
 
 /// 从 {"type":...,"data":"..."} 里取 data（不依赖完整 JSON 解析）。
