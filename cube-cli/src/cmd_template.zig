@@ -8,6 +8,7 @@ const httpc = @import("httpc.zig");
 const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const envd = @import("envd.zig");
+const jsonfmt = @import("jsonfmt.zig");
 
 const Ctx = ctxmod.Ctx;
 
@@ -118,6 +119,9 @@ const Tpl = struct {
     createdAt: []const u8 = "",
     imageInfo: []const u8 = "",
     aliases: []const []const u8 = &.{},
+    jobID: []const u8 = "",
+    lastError: []const u8 = "",
+    instanceType: []const u8 = "",
 };
 
 fn baseName(p: []const u8) []const u8 {
@@ -143,22 +147,97 @@ fn fetchTemplates(c: *Ctx) ![]Tpl {
     return parsed.value;
 }
 
+/// tpl-ls [--json] [--instance-type=] [--status=]
+/// 表格列：模板ID / 状态 / 别名 / jobID / lastError / 网关 / 镜像。
+/// 过滤为本地过滤（服务端 ListTemplatesQuery 目前不消费 status，instance_type 也没有过滤实现）。
 fn tplLs(c: *Ctx, a: util.Args) !void {
     const buf = try c.arena.alloc(u8, 2 << 20);
-    if (a.has("json")) {
+    const f_itype = a.get("instance-type");
+    const f_status = a.get("status");
+    const has_filter = (f_itype != null) or (f_status != null);
+
+    if (a.has("json") and !has_filter) {
         const res = try c.control(.GET, "/templates", null, buf);
         try c.out.print("{s}\n", .{res.body});
         return;
     }
     const list = try fetchTemplates(c);
-    try c.out.print("{s:<34} {s:<7} {s:<6} {s}\n", .{ "模板ID", "状态", "网关", "镜像" });
+    if (a.has("json")) {
+        // 过滤后仍输出 JSON（保留服务端原始字段）
+        const res = try c.control(.GET, "/templates", null, buf);
+        try c.out.print("{s}\n", .{try filterTemplatesJson(c, res.body, f_itype, f_status)});
+        return;
+    }
+    try c.out.print("{s:<36} {s:<8} {s:<18} {s:<38} {s:<26} {s:<6} {s}\n", .{ "模板ID", "状态", "别名", "jobID", "lastError", "网关", "镜像" });
+    var shown: usize = 0;
     for (list) |t| {
+        if (f_itype) |x| {
+            if (!std.ascii.eqlIgnoreCase(t.instanceType, x)) continue;
+        }
+        if (f_status) |x| {
+            if (!std.ascii.eqlIgnoreCase(t.status, x)) continue;
+        }
         const ports = try detailPorts(c, t.templateID, buf);
         const gw = guessGateway(ports, t.imageInfo);
         var gwbuf: [8]u8 = undefined;
         const gws: []const u8 = if (gw > 0) try std.fmt.bufPrint(&gwbuf, "{d}", .{gw}) else "-";
-        try c.out.print("{s:<34} {s:<7} {s:<6} {s}\n", .{ t.templateID, t.status, gws, baseName(t.imageInfo) });
+        const alias = try joinAliases(c.arena, t.aliases);
+        try c.out.print("{s:<36} {s:<8} {s:<18} {s:<38} {s:<26} {s:<6} {s}\n", .{
+            t.templateID,
+            t.status,
+            alias,
+            if (t.jobID.len > 0) t.jobID else "-",
+            truncEllipsis(t.lastError, 26),
+            gws,
+            baseName(t.imageInfo),
+        });
+        shown += 1;
     }
+    try c.out.print("共 {d} 个\n", .{shown});
+}
+
+fn joinAliases(arena: std.mem.Allocator, aliases: []const []const u8) ![]const u8 {
+    if (aliases.len == 0) return "-";
+    var w = std.Io.Writer.fixed(try arena.alloc(u8, 512));
+    for (aliases, 0..) |al, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.writeAll(al);
+    }
+    return w.buffered();
+}
+
+/// 超过 n 字节则截断并加省略号（lastError 这类长文本）。
+fn truncEllipsis(s: []const u8, n: usize) []const u8 {
+    if (s.len <= n) return s;
+    return std.fmt.allocPrint(std.heap.smp_allocator, "{s}…", .{s[0..n]}) catch s[0..n];
+}
+
+/// 过滤 JSON 数组（instanceType / status 大小写不敏感）；非数组原样返回。
+fn filterTemplatesJson(c: *Ctx, body: []const u8, itype: ?[]const u8, status: ?[]const u8) ![]const u8 {
+    const v = std.json.parseFromSlice(std.json.Value, c.arena, body, .{}) catch return body;
+    if (v.value != .array) return body;
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 8 << 20));
+    try w.writeAll("[");
+    var first = true;
+    for (v.value.array.items) |it| {
+        if (itype) |x| {
+            if (!std.ascii.eqlIgnoreCase(tplFieldStr(it, "instanceType"), x)) continue;
+        }
+        if (status) |x| {
+            if (!std.ascii.eqlIgnoreCase(tplFieldStr(it, "status"), x)) continue;
+        }
+        if (!first) try w.writeAll(",");
+        first = false;
+        try w.print("{f}", .{std.json.fmt(it, .{})});
+    }
+    try w.writeAll("]");
+    return w.buffered();
+}
+
+fn tplFieldStr(v: std.json.Value, key: []const u8) []const u8 {
+    const f = jsonfmt.objGet(v, key) orelse return "";
+    if (f != .string) return "";
+    return f.string;
 }
 
 /// tpl-caps [<模板ID>] [--probe] [--prune] [--json]
@@ -516,6 +595,339 @@ fn tplLogs(c: *Ctx, a: util.Args) !void {
     try c.out.print("{s}\n", .{res.body});
 }
 
+// ---------------- P1：模板生命周期（tpl-rm / tpl-rebuild / tpl-build-status / tpl-alias / tpl-resolve） ----------------
+
+/// 模板构建任务（POST /templates、POST /templates/{id} 的 202 响应体）。
+const BuildJob = struct {
+    jobID: []const u8 = "",
+    templateID: []const u8 = "",
+    status: []const u8 = "",
+    phase: []const u8 = "",
+    progress: i64 = 0,
+    errorMessage: []const u8 = "",
+};
+
+fn parseBuildJob(c: *Ctx, body: []const u8) ?BuildJob {
+    const parsed = std.json.parseFromSlice(BuildJob, c.arena, body, .{ .ignore_unknown_fields = true }) catch return null;
+    return parsed.value;
+}
+
+/// 取 JSON 字符串字段（缺省返回 ""）。
+fn bodyField(c: *Ctx, body: []const u8, key: []const u8) []const u8 {
+    const v = std.json.parseFromSlice(std.json.Value, c.arena, body, .{}) catch return "";
+    const f = jsonfmt.objGet(v.value, key) orelse return "";
+    if (f != .string) return "";
+    return f.string;
+}
+
+/// 取 JSON 整数字段（缺省 -1）。
+fn bodyInt(c: *Ctx, body: []const u8, key: []const u8) i64 {
+    const v = std.json.parseFromSlice(std.json.Value, c.arena, body, .{}) catch return -1;
+    const f = jsonfmt.objGet(v.value, key) orelse return -1;
+    if (f != .integer) return -1;
+    return f.integer;
+}
+
+fn buildStatusPath(c: *Ctx, tid: []const u8, bid: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(c.arena, "/templates/{s}/builds/{s}/status", .{
+        try jsonfmt.qenc(c.arena, tid, false),
+        try jsonfmt.qenc(c.arena, bid, false),
+    });
+}
+
+/// tpl-rm <模板ID> [--sync] [--instance-type=]
+/// DELETE /templates/{id}（模板与快照共用：快照删除会带 x-operation-id 响应头）。
+fn tplRm(c: *Ctx, a: util.Args) !void {
+    const id = a.at(0) orelse return error.MissingArg;
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 1024));
+    try w.writeAll("/templates/");
+    try w.writeAll(try jsonfmt.qenc(c.arena, id, false));
+    var sep: u8 = '?';
+    if (a.get("instance-type")) |v| {
+        try w.print("{c}instance_type={s}", .{ sep, try jsonfmt.qenc(c.arena, v, false) });
+        sep = '&';
+    }
+    if (a.has("sync")) {
+        try w.print("{c}sync=true", .{sep});
+        sep = '&';
+    }
+    const buf = try c.arena.alloc(u8, 2 << 20);
+    const res = try c.controlRaw(.DELETE, w.buffered(), null, &.{}, buf);
+    if (res.ok()) {
+        if (res.header("x-operation-id")) |op| {
+            try c.out.print("已删除快照 {s}（operationID={s}）\n", .{ id, op });
+        } else {
+            try c.out.print("已删除模板 {s}\n", .{id});
+        }
+        return;
+    }
+    if (res.status == 404) {
+        try c.out.print("不存在（可能已删除）: {s}\n", .{id});
+        return;
+    }
+    try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body[0..@min(res.body.len, 400)] });
+    return error.HttpError;
+}
+
+/// tpl-rebuild <模板ID> [--wait] [--json] [--timeout=秒]
+/// POST /templates/{id} → 202 构建任务；--wait 轮询 build-status 到终态（默认上限 900s）。
+fn tplRebuild(c: *Ctx, a: util.Args) !void {
+    const id = a.at(0) orelse return error.MissingArg;
+    const buf = try c.arena.alloc(u8, 2 << 20);
+    const path = try std.fmt.allocPrint(c.arena, "/templates/{s}", .{try jsonfmt.qenc(c.arena, id, false)});
+    const res = try c.controlRaw(.POST, path, "{}", &.{}, buf);
+    if (!res.ok()) {
+        if (res.status == 404) {
+            try c.out.print("模板不存在: {s}\n", .{id});
+        } else {
+            try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body[0..@min(res.body.len, 400)] });
+        }
+        return error.HttpError;
+    }
+    const job = parseBuildJob(c, res.body);
+    if (a.has("json")) {
+        try c.out.print("{s}\n", .{res.body});
+    } else if (job) |j| {
+        try c.out.print("已提交重建: {s}\n", .{id});
+        try c.out.print("  jobID: {s}\n  status: {s}\n  phase: {s}\n  progress: {d}\n", .{ j.jobID, j.status, j.phase, j.progress });
+    } else {
+        try c.out.print("{s}\n", .{res.body});
+    }
+    if (a.has("wait")) {
+        const j = job orelse {
+            try c.out.print("错误：响应里没有 jobID，无法 --wait\n", .{});
+            return error.BadJson;
+        };
+        var limit_s: u64 = 900;
+        if (a.get("timeout")) |t| limit_s = std.fmt.parseInt(u64, t, 10) catch 900;
+        const fin = try pollBuild(c, id, j.jobID, limit_s);
+        if (a.has("json")) {
+            try c.out.print("{s}\n", .{fin.body});
+        } else if (fin.ok) {
+            try c.out.print("构建完成: {s}\n", .{id});
+        } else {
+            try c.out.print("构建失败: {s}（{s}）\n", .{ id, fin.message });
+        }
+        if (!fin.ok) return error.BuildFailed;
+    }
+}
+
+/// tpl-build-status <模板ID> <buildID> [--wait] [--json] [--timeout=秒]
+/// GET /templates/{id}/builds/{bid}/status；--wait 轮询到终态（默认上限 900s）。
+fn tplBuildStatus(c: *Ctx, a: util.Args) !void {
+    const tid = a.at(0) orelse return error.MissingArg;
+    const bid = a.at(1) orelse return error.MissingArg;
+    const buf = try c.arena.alloc(u8, 2 << 20);
+    const res = try c.controlRaw(.GET, try buildStatusPath(c, tid, bid), null, &.{}, buf);
+    if (!res.ok()) {
+        if (res.status == 404) {
+            try c.out.print("构建任务不存在（模板 {s}，构建 {s}）\n", .{ tid, bid });
+        } else {
+            try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body[0..@min(res.body.len, 300)] });
+        }
+        return error.HttpError;
+    }
+    if (a.has("json")) {
+        try c.out.print("{s}\n", .{res.body});
+    } else {
+        try c.out.print("模板   : {s}\n", .{bodyField(c, res.body, "templateID")});
+        try c.out.print("构建   : {s}\n", .{bodyField(c, res.body, "buildID")});
+        try c.out.print("状态   : {s}\n", .{bodyField(c, res.body, "status")});
+        try c.out.print("进度   : {d}\n", .{bodyInt(c, res.body, "progress")});
+        try c.out.print("消息   : {s}\n", .{bodyField(c, res.body, "message")});
+    }
+    if (a.has("wait")) {
+        var limit_s: u64 = 900;
+        if (a.get("timeout")) |t| limit_s = std.fmt.parseInt(u64, t, 10) catch 900;
+        const fin = try pollBuild(c, tid, bid, limit_s);
+        if (a.has("json")) {
+            try c.out.print("{s}\n", .{fin.body});
+        } else if (fin.ok) {
+            try c.out.print("构建完成（status={s}，progress={d}）\n", .{ fin.status, fin.progress });
+        } else {
+            try c.out.print("构建失败（status={s}）：{s}\n", .{ fin.status, fin.message });
+        }
+        if (!fin.ok) return error.BuildFailed;
+    }
+}
+
+/// 构建终态结果（pollBuild 返回；cmd_image 的 --create --wait 复用）。
+pub const BuildFinal = struct {
+    ok: bool,
+    status: []const u8,
+    message: []const u8,
+    progress: i64,
+    body: []const u8,
+};
+
+/// 轮询构建任务到终态：ready=成功 / failed=失败；其余（pending/running/built…）继续等。
+pub fn pollBuild(c: *Ctx, tid: []const u8, bid: []const u8, timeout_s: u64) !BuildFinal {
+    var waited: u64 = 0;
+    while (true) {
+        const buf = try c.arena.alloc(u8, 2 << 20);
+        const res = try c.control(.GET, try buildStatusPath(c, tid, bid), null, buf);
+        const st = bodyField(c, res.body, "status");
+        const msg = bodyField(c, res.body, "message");
+        const prog = bodyInt(c, res.body, "progress");
+        const fin = BuildFinal{
+            .ok = true,
+            .status = st,
+            .message = msg,
+            .progress = prog,
+            .body = try c.arena.dupe(u8, res.body),
+        };
+        if (std.ascii.eqlIgnoreCase(st, "ready")) return fin;
+        if (std.ascii.eqlIgnoreCase(st, "failed")) {
+            std.debug.print("[build] 失败：{s}（progress={d}）\n", .{ msg, prog });
+            return .{ .ok = false, .status = st, .message = msg, .progress = prog, .body = try c.arena.dupe(u8, res.body) };
+        }
+        if (waited >= timeout_s) {
+            try c.out.print("超时 {d}s：构建未完成（status={s}，progress={d}）\n", .{ timeout_s, st, prog });
+            return error.WaitTimeout;
+        }
+        std.debug.print("[build] status={s} progress={d}（已等 {d}s）\n", .{ st, prog, waited });
+        try std.Io.sleep(c.io, .fromSeconds(3), .awake);
+        waited += 3;
+    }
+}
+
+/// tpl-alias <模板ID> [<别名>] [--json]
+/// PUT /templates/{id}/alias {"alias":"..."}；省略别名（或给空串）= 清除。
+fn tplAlias(c: *Ctx, a: util.Args) !void {
+    const id = a.at(0) orelse return error.MissingArg;
+    const alias: []const u8 = a.at(1) orelse "";
+    const body = try std.fmt.allocPrint(c.arena, "{{\"alias\":\"{s}\"}}", .{try envd.jsonEscape(c.arena, alias)});
+    const buf = try c.arena.alloc(u8, 2 << 20);
+    const path = try std.fmt.allocPrint(c.arena, "/templates/{s}/alias", .{try jsonfmt.qenc(c.arena, id, false)});
+    const res = try c.controlRaw(.PUT, path, body, &.{}, buf);
+    if (!res.ok()) {
+        if (res.status == 404) {
+            try c.out.print("模板不存在: {s}\n", .{id});
+        } else if (res.status == 409) {
+            try c.out.print("别名冲突或模板未就绪，可重试：HTTP 409: {s}\n", .{res.body[0..@min(res.body.len, 300)]});
+        } else {
+            try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body[0..@min(res.body.len, 300)] });
+        }
+        return error.HttpError;
+    }
+    if (a.has("json")) {
+        try c.out.print("{s}\n", .{res.body});
+        return;
+    }
+    if (alias.len == 0) {
+        try c.out.print("已清除别名（模板 {s}）\n", .{id});
+    } else {
+        try c.out.print("已设置别名 {s} → {s}\n", .{ alias, id });
+    }
+    const als = aliasList(c, res.body);
+    if (als.len > 0) try c.out.print("当前别名: {s}\n", .{try joinAliases(c.arena, als)});
+}
+
+fn aliasList(c: *Ctx, body: []const u8) []const []const u8 {
+    const v = std.json.parseFromSlice(std.json.Value, c.arena, body, .{}) catch return &.{};
+    const f = jsonfmt.objGet(v.value, "aliases") orelse return &.{};
+    if (f != .array) return &.{};
+    var out = c.arena.alloc([]const u8, f.array.items.len) catch return &.{};
+    var n: usize = 0;
+    for (f.array.items) |it| {
+        if (it == .string) {
+            out[n] = it.string;
+            n += 1;
+        }
+    }
+    return out[0..n];
+}
+
+/// tpl-resolve <别名> [--json]
+/// GET /templates/aliases/{alias} → 打印 templateID。
+fn tplResolve(c: *Ctx, a: util.Args) !void {
+    const al = a.at(0) orelse return error.MissingArg;
+    const buf = try c.arena.alloc(u8, 1 << 20);
+    const path = try std.fmt.allocPrint(c.arena, "/templates/aliases/{s}", .{try jsonfmt.qenc(c.arena, al, false)});
+    const res = try c.controlRaw(.GET, path, null, &.{}, buf);
+    if (!res.ok()) {
+        if (res.status == 404) {
+            try c.out.print("别名不存在: {s}\n", .{al});
+        } else {
+            try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body[0..@min(res.body.len, 300)] });
+        }
+        return error.HttpError;
+    }
+    if (a.has("json")) {
+        try c.out.print("{s}\n", .{res.body});
+        return;
+    }
+    const id = envd.extractString(c.arena, res.body, "templateID") orelse {
+        try c.out.print("{s}\n", .{res.body});
+        return error.BadJson;
+    };
+    try c.out.print("{s}\n", .{id});
+    std.debug.print("[resolve] 别名 {s} → {s}\n", .{ al, id });
+}
+
+/// 服务端别名解析（GET /templates/aliases/{alias}）：命中返回 templateID；未命中/失败返回 null（静默）。
+pub fn resolveAlias(c: *Ctx, name: []const u8) ?[]const u8 {
+    if (name.len == 0) return null;
+    const buf = c.arena.alloc(u8, 1 << 20) catch return null;
+    const path = std.fmt.allocPrint(c.arena, "/templates/aliases/{s}", .{jsonfmt.qenc(c.arena, name, false) catch return null}) catch return null;
+    const res = c.controlRaw(.GET, path, null, &.{}, buf) catch return null;
+    if (!res.ok()) return null;
+    return envd.extractString(c.arena, res.body, "templateID");
+}
+
+/// new --template 的解析：① 服务端别名 → ② 本地匹配（模板 ID 全等 / 别名 / imageInfo 子串，唯一命中）。
+/// 都未命中返回 null（调用方保持旧行为：原样交给服务端解析）。
+pub fn resolveTemplateRef(c: *Ctx, s: []const u8) ?[]const u8 {
+    if (s.len == 0) return null;
+    if (resolveAlias(c, s)) |id| return id;
+    const list = fetchTemplates(c) catch return null;
+    for (list) |t| {
+        if (std.mem.eql(u8, t.templateID, s)) return t.templateID;
+    }
+    for (list) |t| {
+        for (t.aliases) |al| {
+            if (std.mem.eql(u8, al, s)) return t.templateID;
+        }
+    }
+    var hit: ?[]const u8 = null;
+    var cnt: usize = 0;
+    for (list) |t| {
+        if (containsIgnoreCase(t.imageInfo, s)) {
+            cnt += 1;
+            if (hit == null) hit = t.templateID;
+        }
+    }
+    if (cnt == 1) return hit;
+    if (cnt > 1) {
+        std.debug.print("[template] 「{s}」本地匹配到 {d} 个模板，不自动选择；候选：\n", .{ s, cnt });
+        var shown: usize = 0;
+        for (list) |t| {
+            if (!containsIgnoreCase(t.imageInfo, s)) continue;
+            std.debug.print("  {s}  {s}  {s}\n", .{ t.templateID, t.status, baseName(t.imageInfo) });
+            shown += 1;
+            if (shown >= 8) break;
+        }
+    }
+    return null;
+}
+
+fn containsIgnoreCase(hay: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > hay.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        var ok = true;
+        for (needle, 0..) |ch, j| {
+            if (std.ascii.toLower(hay[i + j]) != std.ascii.toLower(ch)) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) return true;
+    }
+    return false;
+}
+
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
@@ -540,6 +952,26 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     }
     if (eq(cmd, "tpl-logs")) {
         try tplLogs(c, a);
+        return true;
+    }
+    if (eq(cmd, "tpl-rm")) {
+        try tplRm(c, a);
+        return true;
+    }
+    if (eq(cmd, "tpl-rebuild")) {
+        try tplRebuild(c, a);
+        return true;
+    }
+    if (eq(cmd, "tpl-build-status")) {
+        try tplBuildStatus(c, a);
+        return true;
+    }
+    if (eq(cmd, "tpl-alias")) {
+        try tplAlias(c, a);
+        return true;
+    }
+    if (eq(cmd, "tpl-resolve")) {
+        try tplResolve(c, a);
         return true;
     }
     return false;

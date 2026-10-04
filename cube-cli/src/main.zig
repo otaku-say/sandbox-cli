@@ -140,7 +140,14 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
     // --template 优先；没有则按 --need 动态挑（与 tpl-pick 同一逻辑）
     var tpl: []const u8 = "";
     if (a.get("template")) |t| {
-        tpl = t;
+        // 先查服务端别名（GET /templates/aliases/{名}）；失败再退回本地匹配
+        // （模板 ID 全等 / 别名 / imageInfo 子串唯一命中）；都未命中就原样交给服务端。
+        if (cmd_template.resolveTemplateRef(c, t)) |id| {
+            tpl = id;
+            std.debug.print("[template] {s} → {s}\n", .{ t, id });
+        } else {
+            tpl = t;
+        }
     } else {
         // 默认 --need=code（aio-code 沙箱：不需要浏览器时的一律选择；
         // 需要浏览器/桌面时显式给 --need=browser|desktop）

@@ -17,6 +17,7 @@ const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const envd = @import("envd.zig");
 const httpc = @import("httpc.zig");
+const cmd_template = @import("cmd_template.zig");
 
 const Ctx = ctxmod.Ctx;
 
@@ -33,7 +34,21 @@ const TplDefaults = struct {
     cpu: u32 = 0,
     memory: u32 = 0,
     env: []const []const u8 = &.{},
+    /// E2B v3 模板名（name 字段）；标签/CLI 的「别名」写 alias 字段，别再混用。
     name: []const u8 = "",
+    /// 模板别名（E2B 兼容 alias 字段；老写法误把 --alias 写进 name）。
+    alias: []const u8 = "",
+    instanceType: []const u8 = "",
+    networkType: []const u8 = "",
+    allowOut: []const []const u8 = &.{},
+    denyOut: []const []const u8 = &.{},
+    dns: []const []const u8 = &.{},
+    nodes: []const []const u8 = &.{},
+    command: []const []const u8 = &.{},
+    args: []const []const u8 = &.{},
+    allowInternetAccess: ?bool = null,
+    enableIvshmem: ?bool = null,
+    withCubeCa: ?bool = null,
 };
 
 // ---------------- 基础工具 ----------------
@@ -384,7 +399,7 @@ fn defaultsFromImage(c: *Ctx, ref: []const u8, cfg: std.json.Value, a: util.Args
             if (getStr(lv, "io.cubesandbox.template.writable-layer-size")) |s| d.writableLayerSize = trim(s);
             if (getStr(lv, "io.cubesandbox.template.cpu")) |s| d.cpu = std.fmt.parseInt(u32, trim(s), 10) catch d.cpu;
             if (getStr(lv, "io.cubesandbox.template.memory")) |s| d.memory = std.fmt.parseInt(u32, trim(s), 10) catch d.memory;
-            if (getStr(lv, "io.cubesandbox.template.alias")) |s| d.name = trim(s);
+            if (getStr(lv, "io.cubesandbox.template.alias")) |s| d.alias = trim(s);
         }
     }
 
@@ -429,10 +444,22 @@ fn defaultsFromImage(c: *Ctx, ref: []const u8, cfg: std.json.Value, a: util.Args
     }
 
     // ④ 命令行覆盖
-    if (a.get("alias")) |v| d.name = v;
+    if (a.get("alias")) |v| d.alias = v;
+    if (a.get("name")) |v| d.name = v;
     if (a.get("writable")) |v| d.writableLayerSize = v;
     if (a.get("cpu")) |v| d.cpu = std.fmt.parseInt(u32, v, 10) catch d.cpu;
     if (a.get("memory")) |v| d.memory = std.fmt.parseInt(u32, v, 10) catch d.memory;
+    if (a.get("instance-type")) |v| d.instanceType = v;
+    if (a.get("network-type")) |v| d.networkType = v;
+    if (a.get("allow-out")) |v| d.allowOut = try splitCsv(c.arena, v);
+    if (a.get("deny-out")) |v| d.denyOut = try splitCsv(c.arena, v);
+    if (a.get("dns")) |v| d.dns = try splitCsv(c.arena, v);
+    if (a.get("node")) |v| d.nodes = try splitCsv(c.arena, v);
+    if (a.get("cmd")) |v| d.command = try splitCsv(c.arena, v);
+    if (a.get("args")) |v| d.args = try splitCsv(c.arena, v);
+    if (a.has("no-internet")) d.allowInternetAccess = false;
+    if (a.has("ivshmem")) d.enableIvshmem = true;
+    if (a.has("no-cube-ca")) d.withCubeCa = false;
     if (a.get("env")) |v| {
         var ev_buf = try c.arena.alloc([]const u8, 32);
         var en: usize = 0;
@@ -480,8 +507,52 @@ fn buildBody(c: *Ctx, d: TplDefaults) ![]const u8 {
         }
         try w.writeAll("]");
     }
+    // P1 新增参数（wire 名按 CubeAPI CreateTemplateRequest 模型）
+    if (d.dns.len > 0) try w.print(",\"dns\":{s}", .{try strArrJson(c, d.dns)});
+    if (d.allowOut.len > 0) try w.print(",\"allowOut\":{s}", .{try strArrJson(c, d.allowOut)});
+    if (d.denyOut.len > 0) try w.print(",\"denyOut\":{s}", .{try strArrJson(c, d.denyOut)});
+    if (d.nodes.len > 0) try w.print(",\"nodes\":{s}", .{try strArrJson(c, d.nodes)});
+    if (d.command.len > 0) try w.print(",\"command\":{s}", .{try strArrJson(c, d.command)});
+    if (d.args.len > 0) try w.print(",\"args\":{s}", .{try strArrJson(c, d.args)});
+    if (d.allowInternetAccess) |b| try w.print(",\"allowInternetAccess\":{s}", .{if (b) "true" else "false"});
+    if (d.networkType.len > 0) try w.print(",\"networkType\":\"{s}\"", .{try envd.jsonEscape(c.arena, d.networkType)});
+    if (d.instanceType.len > 0) try w.print(",\"instanceType\":\"{s}\"", .{try envd.jsonEscape(c.arena, d.instanceType)});
+    if (d.enableIvshmem) |b| {
+        if (b) try w.writeAll(",\"enableIvshmem\":true");
+    }
+    if (d.withCubeCa) |b| try w.print(",\"with_cube_ca\":{s}", .{if (b) "true" else "false"});
+    // --alias 写 alias 字段（修复：旧实现错写进 name）；--name 写 name 字段
+    if (d.alias.len > 0) try w.print(",\"alias\":\"{s}\"", .{try envd.jsonEscape(c.arena, d.alias)});
     if (d.name.len > 0) try w.print(",\"name\":\"{s}\"", .{try envd.jsonEscape(c.arena, d.name)});
     try w.writeAll("}");
+    return w.buffered();
+}
+
+/// 逗号分隔 → 字符串数组（空项丢弃；去掉首尾空白）。
+fn splitCsv(arena: std.mem.Allocator, s: []const u8) ![]const []const u8 {
+    var buf = try arena.alloc([]const u8, 64);
+    var n: usize = 0;
+    var it = std.mem.tokenizeScalar(u8, s, ',');
+    while (it.next()) |tok| {
+        const t = trim(tok);
+        if (t.len == 0) continue;
+        if (n < buf.len) {
+            buf[n] = t;
+            n += 1;
+        }
+    }
+    return buf[0..n];
+}
+
+/// JSON 字符串数组序列化。
+fn strArrJson(c: *Ctx, items: []const []const u8) ![]const u8 {
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 16 << 10));
+    try w.writeAll("[");
+    for (items, 0..) |it, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("\"{s}\"", .{try envd.jsonEscape(c.arena, it)});
+    }
+    try w.writeAll("]");
     return w.buffered();
 }
 
@@ -489,7 +560,13 @@ fn buildBody(c: *Ctx, d: TplDefaults) ![]const u8 {
 
 fn cmdTplFromImage(c: *Ctx, a: util.Args) !void {
     const ref = a.at(0) orelse {
-        try c.out.print("用法: tpl-from-image <镜像引用> [--alias=] [--cpu=] [--memory=] [--writable=] [--env=K=V,..] [--json|--curl|--create] [--platform=linux/amd64]\n", .{});
+        try c.out.print(
+            "用法: tpl-from-image <镜像引用> [--alias=] [--name=] [--cpu=] [--memory=] [--writable=] [--env=K=V,..]\n" ++
+                "      [--instance-type=] [--network-type=] [--allow-out=] [--deny-out=] [--dns=] [--node=]\n" ++
+                "      [--cmd=] [--args=] [--no-internet] [--ivshmem] [--no-cube-ca]\n" ++
+                "      [--json|--curl|--create [--no-wait]] [--platform=linux/amd64] [--registry-user=] [--registry-pass=]\n",
+            .{},
+        );
         return error.MissingArg;
     };
     const user = a.get("registry-user") orelse "";
@@ -526,7 +603,13 @@ fn cmdTplFromImage(c: *Ctx, a: util.Args) !void {
     }
     try c.out.print("\n", .{});
     try c.out.print("  就绪探针: {d} {s}\n", .{ d.probePort, d.probePath });
-    try c.out.print("  可写层: {s}   CPU: {d}  内存: {d}MiB  别名: {s}\n", .{ d.writableLayerSize, d.cpu, d.memory, d.name });
+    try c.out.print("  可写层: {s}   CPU: {d}  内存: {d}MiB\n", .{ d.writableLayerSize, d.cpu, d.memory });
+    if (d.alias.len > 0 or d.name.len > 0) {
+        try c.out.print("  别名(alias): {s}   名称(name): {s}\n", .{ if (d.alias.len > 0) d.alias else "-", if (d.name.len > 0) d.name else "-" });
+    }
+    if (d.instanceType.len > 0) try c.out.print("  实例类型: {s}\n", .{d.instanceType});
+    if (d.networkType.len > 0) try c.out.print("  网络类型: {s}\n", .{d.networkType});
+    if (d.allowInternetAccess) |b| try c.out.print("  允许公网: {s}\n", .{if (b) "是" else "否"});
     for (synth.warnings) |wk| {
         std.debug.print("⚠️  {s}\n", .{wk});
     }
@@ -534,8 +617,31 @@ fn cmdTplFromImage(c: *Ctx, a: util.Args) !void {
 
     if (a.has("create")) {
         const buf = try c.arena.alloc(u8, 2 << 20);
-        const res = try c.control(.POST, "/templates", body, buf);
-        try c.out.print("已提交: {s}\n", .{firstLine(res.body)});
+        const res = try c.controlRaw(.POST, "/templates", body, &.{}, buf);
+        if (!res.ok()) {
+            try c.out.print("HTTP {d}: {s}\n", .{ res.status, firstLine(res.body) });
+            return error.HttpError;
+        }
+        const jt = envd.extractString(c.arena, res.body, "templateID") orelse "";
+        const jj = envd.extractString(c.arena, res.body, "jobID") orelse "";
+        const js = envd.extractString(c.arena, res.body, "status") orelse "";
+        try c.out.print("已提交: templateID={s} jobID={s} status={s}\n", .{ jt, jj, js });
+        // --create 默认等到构建终态（--no-wait 关闭；用 build-status 轮询）
+        if (!a.has("no-wait")) {
+            if (jt.len == 0 or jj.len == 0) {
+                try c.out.print("警告：响应缺少 templateID/jobID，无法等待构建；可用 tpl-ls / tpl-build-status 复查\n", .{});
+                return;
+            }
+            var limit_s: u64 = 1800;
+            if (a.get("timeout")) |t| limit_s = std.fmt.parseInt(u64, t, 10) catch 1800;
+            const fin = try cmd_template.pollBuild(c, jt, jj, limit_s);
+            if (fin.ok) {
+                try c.out.print("模板就绪: {s}（status={s}，progress={d}）\n", .{ jt, fin.status, fin.progress });
+            } else {
+                try c.out.print("模板构建失败: {s}（{s}）\n", .{ jt, fin.message });
+                return error.BuildFailed;
+            }
+        }
     }
 }
 
