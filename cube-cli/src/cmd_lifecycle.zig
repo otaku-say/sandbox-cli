@@ -169,54 +169,70 @@ fn cmdVol(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     }
 }
 
+fn qstr(c: *Ctx, s: []const u8) ![]const u8 {
+    const e = try envd.jsonEscape(c.arena, s);
+    const q = "\"";
+    return try std.fmt.allocPrint(c.arena, "{s}{s}{s}", .{ q, e, q });
+}
 /// net <sid> [--no-internet] [--allow=域1,域2] [--deny=域1,域2]
 /// 更新沙箱网络策略（PUT /sandboxes/<id>/network，204 即成功）。
+/// net <sid> [--no-internet|--internet] [--allow=a,b] [--deny=a,b]
+///        [--clear-allow] [--clear-deny] [--public=allow|deny] [--mask-host=1]
+///        [--print] [--yes]
+/// 平台语义：PUT 是「全量替换」，未出现的字段会被重置为默认值。
+/// kv 追加 "key":value，逗号由 body 是否还是 "{" 决定
+fn kv(c: *Ctx, body: []const u8, key: []const u8, val: []const u8) ![]const u8 {
+    const comma: []const u8 = if (std.mem.eql(u8, body, "{")) "" else ",";
+    return try std.fmt.allocPrint(c.arena, "{s}{s}\"{s}\":{s}", .{ body, comma, key, val });
+}
+
+/// net <sid> [--no-internet|--internet] [--allow=a,b] [--deny=a,b] [--clear-allow]
+///        [--clear-deny] [--public=allow|deny] [--mask-host=1] [--print] [--yes]
+/// 平台语义：PUT /sandboxes/<id>/network 是全量替换，未出现的字段被重置为默认。
 fn cmdNet(c: *Ctx, a: util.Args) !void {
     const sid = try sidOf(a);
-    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 32 << 10));
-    try w.writeAll("{");
-    var first = true;
-    if (a.has("no-internet")) {
-        try w.writeAll("\"allowInternetAccess\":false");
-        first = false;
+    var body: []const u8 = "{";
+    var internet: ?bool = null;
+    if (a.has("no-internet")) internet = false;
+    if (a.has("internet")) internet = true;
+    if (internet) |v| body = try kv(c, body, "allowInternetAccess", if (v) "true" else "false");
+    body = try netArr(c, a, body, "allowOut", "allow", "clear-allow");
+    body = try netArr(c, a, body, "denyOut", "deny", "clear-deny");
+    if (a.get("public")) |v| body = try kv(c, body, "allowPublicTraffic", if (std.mem.eql(u8, v, "allow")) "true" else "false");
+    if (a.get("mask-host")) |v| body = try kv(c, body, "maskRequestHost", try qstr(c, v));
+    body = try std.fmt.allocPrint(c.arena, "{s}}}", .{body});
+    std.debug.print("[net] 将 PUT /sandboxes/{s}/network ← {s}\n", .{ sid, body });
+    const relaxed = a.has("internet");
+    if (internet == null) std.debug.print("[net] ⚠ 未指定 --internet/--no-internet：该字段会被重置为默认（=允许公网访问）\n", .{}) else if (relaxed) std.debug.print("[net] ⚠ --internet 属放宽出网限制的操作\n", .{});
+    if (a.has("print")) {
+        std.debug.print("[net] --print：仅显示，未发送\n", .{});
+        return;
     }
-    if (a.has("internet")) {
-        if (!first) try w.writeAll(",");
-        first = false;
-        try w.writeAll("\"allowInternetAccess\":true");
+    if ((internet == null or relaxed) and !a.has("yes")) {
+        try c.out.print("已阻止：上游 PUT 是全量替换语义，缺 allowInternetAccess 会静默恢复公网访问；--internet 属放宽操作。\n确认要按上面内容覆盖策略就加 --yes；只想看就加 --print。\n", .{});
+        return error.NeedsConfirm;
     }
-    if (a.get("allow")) |v| {
-        if (!first) try w.writeAll(",");
-        first = false;
-        try w.writeAll("\"allowOut\":[");
-        var it = std.mem.tokenizeScalar(u8, v, ',');
-        var f2 = true;
-        while (it.next()) |tok| {
-            if (!f2) try w.writeAll(",");
-            f2 = false;
-            try w.print("\"{s}\"", .{try envd.jsonEscape(c.arena, tok)});
-        }
-        try w.writeAll("]");
-    }
-    if (a.get("deny")) |v| {
-        if (!first) try w.writeAll(",");
-        first = false;
-        try w.writeAll("\"denyOut\":[");
-        var it = std.mem.tokenizeScalar(u8, v, ',');
-        var f2 = true;
-        while (it.next()) |tok| {
-            if (!f2) try w.writeAll(",");
-            f2 = false;
-            try w.print("\"{s}\"", .{try envd.jsonEscape(c.arena, tok)});
-        }
-        try w.writeAll("]");
-    }
-    try w.writeAll("}");
     const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}/network", .{sid});
     const buf = try c.arena.alloc(u8, 2 << 20);
-    _ = try c.control(.PUT, path, w.buffered(), buf);
-    try c.out.print("network updated（{s}）\n", .{sid});
+    _ = try c.control(.PUT, path, body, buf);
+    try c.out.print("network updated（{s}）← {s}\n", .{ sid, body });
 }
+
+fn netArr(c: *Ctx, a: util.Args, body: []const u8, key: []const u8, flag: []const u8, clear: []const u8) ![]const u8 {
+    if (a.get(flag)) |v| {
+        var out: []const u8 = "";
+        var it = std.mem.tokenizeScalar(u8, v, ',');
+        var f2 = true;
+        while (it.next()) |tok| {
+            out = try std.fmt.allocPrint(c.arena, "{s}{s}\"{s}\"", .{ out, if (f2) "" else ",", try envd.jsonEscape(c.arena, tok) });
+            f2 = false;
+        }
+        return try kv(c, body, key, try std.fmt.allocPrint(c.arena, "[{s}]", .{out}));
+    }
+    if (a.has(clear)) return try kv(c, body, key, "[]");
+    return body;
+}
+
 
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
