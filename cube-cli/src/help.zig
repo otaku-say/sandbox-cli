@@ -512,6 +512,55 @@ pub const table = [_]Entry{
         \\注意:  未知命令会打印「未知命令：xxx」并以非 0 退出。
         ,
     },
+    .{
+        .name = "info",
+        .group = 0,
+        .brief = "沙箱详情（规格 / 元数据 / 卷挂载 / 截止时间）",
+        .detail =
+        \\用途:  查看单个沙箱完整状态：state、CPU/内存/磁盘、起止时间、metadata、volumeMounts、domain。
+        \\用法:  cube-cli info <sandboxID> [--json] [--wait=<状态>] [--timeout=<秒>]
+        \\参数:  --json 原样输出；--wait= 轮询到指定状态（如 running）；--timeout= 最大等待秒数。
+        \\示例:  cube-cli info 6f1a... --json
+        \\注意:  上游详情不含网络策略（改策略用 net 命令）。
+        ,
+    },
+    .{
+        .name = "connect",
+        .group = 1,
+        .brief = "连接/续期（官方推荐，替代 deprecated 的 resume）",
+        .detail =
+        \\用途:  把沙箱唤醒并保证「至少还剩 N 秒」（不会缩短已有的更长截止）。
+        \\用法:  cube-cli connect <sandboxID> [--timeout=<秒>] [--json]
+        \\参数:  --timeout= 剩余时间下限（秒）；缺省用平台默认。
+        \\示例:  cube-cli connect 6f1a... --timeout=3600
+        \\注意:  与 resume 语义不同：resume=「从现在起开 N 秒新窗口」；connect=「保证至少剩 N 秒」。
+        ,
+    },
+    .{
+        .name = "logs",
+        .group = 5,
+        .brief = "沙箱日志（启动 / 运行；排障首选）",
+        .detail =
+        \\用途:  读沙箱生命周期日志（建沙箱、启动 VM、恢复快照等）。
+        \\用法:  cube-cli logs <sandboxID> [--tail=<N>] [--start=<游标>] [--limit=<N>] [--v2]
+        \\                      [--cursor=<游标>] [--direction=forward|backward] [--level=info|warn|error] [--json]
+        \\参数:  --tail= 只显示最后 N 行；--v2 走结构化日志接口（level/message/fields）。
+        \\示例:  cube-cli logs 6f1a... --tail=50
+        ,
+    },
+    .{
+        .name = "raw",
+        .group = 5,
+        .brief = "任意控制面 API 透传（未覆盖端点的兜底）",
+        .detail =
+        \\用途:  直接对控制面发任意请求，复用同一套鉴权 / 解压 / 状态码处理；上游新端点无需等 CLI 更新。
+        \\用法:  cube-cli raw <METHOD> <path> [--body=<JSON|@文件|->] [--query=k=v,…] [--header=k:v] [--json]
+        \\参数:  --body= JSON 字符串、@文件名 或 - (stdin)；不带体时 GET/DELETE 无体、POST/PUT 发 {}。
+        \\示例:  cube-cli raw GET /health
+        \\       cube-cli raw POST /sandboxes --body='{"templateID":"tpl-..."}'
+        \\注意:  非 2xx 打印状态码与响应体，并以非 0 退出。
+        ,
+    },
 };
 
 pub fn isHelpArg(a: []const u8) bool {
@@ -581,6 +630,7 @@ pub fn printTop(out: *std.Io.Writer) !void {
         \\【沙箱】
         \\  new      建沙箱（默认 aio-code 镜像）  --need= --template= --timeout= --note= --agent= --task=
         \\  ls       列出沙箱（ID / 模板 / 状态 / 备注）
+        \\  info     沙箱详情（规格/元数据/卷/截止时间）  --json --wait=
         \\  rm       销毁沙箱 <sandboxID>
         \\  exec     在沙箱内执行命令            --cwd= --env= --timeout=
         \\  code     用解释器跑一段代码            --lang=python|js|bash --timeout= --env=
@@ -592,6 +642,7 @@ pub fn printTop(out: *std.Io.Writer) !void {
         \\  timeout  设空闲回收超时 <sid> <秒>（-1 = 永不回收）
         \\  refresh  续期，新增一个时间窗          <sid> <秒>
         \\  net      改网络策略                  --no-internet --allow=域,域 --deny=域,域
+        \\  connect  连接/续期（官方推荐，替代 resume）  --timeout=
         \\
         \\【快照 / 卷】
         \\  snap      打快照 <sid>                --name=
@@ -618,6 +669,8 @@ pub fn printTop(out: *std.Io.Writer) !void {
         \\
         \\【诊断 / 其它】
         \\  health   控制面健康检查
+        \\  logs     沙箱日志（启动/运行）      <sid> --tail=N [--v2]
+        \\  raw      任意 API 透传            <METHOD> <path> [--body=]
         \\  version  版本 / 仓库地址 / 构建信息
         \\  help [命令|all]   帮助；all = 完整命令表
         \\
