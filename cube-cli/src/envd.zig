@@ -158,12 +158,12 @@ pub fn exec(
             if (extractInt(env.payload, "exitCode")) |v| exit_code = v;
         }
         if (std.mem.indexOf(u8, env.payload, "\"stdout\"")) |_| {
-            if (extractB64Field(arena, env.payload, "stdout")) |v| {
+            if (extractString(arena, env.payload, "stdout")) |v| {
                 b64decode(out_buf, &out_len, v);
             }
         }
         if (std.mem.indexOf(u8, env.payload, "\"stderr\"")) |_| {
-            if (extractB64Field(arena, env.payload, "stderr")) |v| {
+            if (extractString(arena, env.payload, "stderr")) |v| {
                 b64decode(err_buf, &err_len, v);
             }
         }
@@ -203,7 +203,7 @@ fn extractInt(payload: []const u8, field: []const u8) ?i32 {
 ///
 /// 用于 base64 载荷（stdout/stderr/pty）与 token —— base64 字符集不含引号与反斜杠，
 /// 因此简单切片是安全的。
-fn extractB64Field(arena: std.mem.Allocator, payload: []const u8, field: []const u8) ?[]const u8 {
+pub fn extractString(arena: std.mem.Allocator, payload: []const u8, field: []const u8) ?[]const u8 {
     const pat = std.fmt.allocPrint(arena, "\"{s}\":\"", .{field}) catch return null;
     const start = std.mem.indexOf(u8, payload, pat) orelse return null;
     const s0 = start + pat.len;
