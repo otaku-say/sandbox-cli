@@ -639,8 +639,7 @@ pub fn printTop(out: *std.Io.Writer) !void {
         \\【生命周期】
         \\  pause    暂停（挂起快照，0 成本）
         \\  resume   恢复                        --timeout=秒
-        \\  timeout  设空闲回收超时 <sid> <秒>（-1 = 永不回收）
-        \\  refresh  续期，新增一个时间窗          <sid> <秒>
+        \\  timeout/refresh  设空闲超时 / 续期   <sid> <秒>（-1 = 永不回收）
         \\  net      改网络策略                  --no-internet --allow=域,域 --deny=域,域
         \\  connect  连接/续期（官方推荐，替代 resume）  --timeout=
         \\
@@ -669,8 +668,7 @@ pub fn printTop(out: *std.Io.Writer) !void {
         \\
         \\【诊断 / 其它】
         \\  health   控制面健康检查
-        \\  logs     沙箱日志（启动/运行）      <sid> --tail=N [--v2]
-        \\  raw      任意 API 透传            <METHOD> <path> [--body=]
+        \\  logs / raw   沙箱日志 / 任意 API 透传   <sid> --tail=N ｜ <METHOD> <path>
         \\  version  版本 / 仓库地址 / 构建信息
         \\  help [命令|all]   帮助；all = 完整命令表
         \\
