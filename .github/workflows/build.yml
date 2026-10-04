@@ -1,0 +1,70 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [cube-cli, aio-cli]
+        target: [aarch64-linux-musl, x86_64-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查子项目是否存在
+        id: probe
+        run: |
+          if [ -f "${{ matrix.tool }}/build.zig" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.tool }} 尚无 build.zig，跳过"
+          fi
+
+      - uses: mlugg/setup-zig@v2
+        if: steps.probe.outputs.exists == 'true'
+        with:
+          version: 0.17.0
+
+      - name: 构建
+        if: steps.probe.outputs.exists == 'true'
+        working-directory: ${{ matrix.tool }}
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+
+      - name: 收集产物
+        if: steps.probe.outputs.exists == 'true'
+        run: |
+          cp "${{ matrix.tool }}/zig-out/bin/${{ matrix.tool }}" \
+             "${{ matrix.tool }}-${{ matrix.target }}"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.probe.outputs.exists == 'true'
+        with:
+          name: ${{ matrix.tool }}-${{ matrix.target }}
+          path: ${{ matrix.tool }}-${{ matrix.target }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 生成校验和
+        run: cd dist && sha256sum * > SHA256SUMS && ls -la
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: latest
+          files: dist/*
+          make_latest: true
