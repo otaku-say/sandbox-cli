@@ -31,7 +31,7 @@ pub const table = [_]Entry{
         .brief = "建沙箱（默认 aio-code 镜像）",
         .detail =
         \\用途:  按能力（--need）或指定模板（--template）新建一个沙箱，并打印 AIO 网关地址
-        \\       （也就是 aio-cli 的 SANDBOX_BASE）。
+        \\       （也就是 aiod-cli 的 SANDBOX_BASE）。
         \\用法:  cube-cli new [--need=code|browser|desktop] [--template=<模板ID>]
         \\                      [--timeout=<秒>] [--note=<名称>] [--agent=<谁>] [--task=<做什么>]
         \\参数:  --need=      需要的能力，默认 code。不带任何参数就是 aio-code 镜像（自带 Zig 工具链）
@@ -523,7 +523,7 @@ pub const table = [_]Entry{
         \\参数:  <本地文件|->  位置参数；`-` 表示从 stdin 读（上限 8 MiB）。
         \\示例:  cube-cli write $SID ./data.csv /home/gem/data.csv
         \\       echo hi | cube-cli write $SID - /tmp/hi.txt
-        \\注意:  整体覆盖写，不支持追加；大文件（> 8 MiB）请用 aio-cli 的 put/fs-tree-put。
+        \\注意:  整体覆盖写，不支持追加；大文件（> 8 MiB）请用 aiod-cli 的 put/fs-tree-put。
         ,
     },
     .{

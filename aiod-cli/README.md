@@ -1,4 +1,4 @@
-# aio-cli
+# aiod-cli
 
 沙箱内 **aiod v2 API** 遥控 CLI（Zig 实现）。
 

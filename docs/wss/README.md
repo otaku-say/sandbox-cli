@@ -43,16 +43,16 @@ zig build-exe tls13.zig -O ReleaseFast -femit-bin=tls13_poc
 ## 交叉编译
 已验证：`zig build-exe tls13.zig -O ReleaseFast -target aarch64-linux-musl` 可静态编译。
 
-## 集成状态（已完成 → aio-cli，见 feat/wss-integration 分支）
-- `aio-cli/src/tls13.zig`：`Conn.fd` 已抽象为 `Stream`（readFn/writeFn，socket 与
+## 集成状态（已完成 → aiod-cli，见 feat/wss-integration 分支）
+- `aiod-cli/src/tls13.zig`：`Conn.fd` 已抽象为 `Stream`（readFn/writeFn，socket 与
   测试桩皆可注入）；对外 `tls13.init(.{host, port, sni, stream, insecure})` 完成握手，
   之后 `write()/read()/closeNotify()`（明文层，内部做 TLS 记录层分帧与拆帧）；
   调试输出默认关闭（`TrafficKeys.debug = false`），`AIO_TLS_DEBUG=1` 打开；
   默认做主机名校验（含 IP SAN）+ CertificateVerify 验签，完整链验证暂未实现；
   `-k` / `--insecure` 跳过主机名校验。
-- `aio-cli/src/ws.zig`：socket 与帧层之间插入 Transport（plain / tls 双层），
+- `aiod-cli/src/ws.zig`：socket 与帧层之间插入 Transport（plain / tls 双层），
   wss:// 时握手走 tls13；ws:// 明文路径行为不变。
-- `aio-cli/src/cmd_pty.zig`：SANDBOX_BASE 为 https:// 时 pty-ws / pty-ws-anon
+- `aiod-cli/src/cmd_pty.zig`：SANDBOX_BASE 为 https:// 时 pty-ws / pty-ws-anon
   自动走 wss://。
 - 已实测：沙箱内 openssl s_server（自签证书，SAN 匹配 / 不匹配 / 加 -k 三组）；
   沙箱 → wss → 真实 Cloudflare 反代 → 沙箱网关（pty 附着 + 命令执行 + 副作用核验）；

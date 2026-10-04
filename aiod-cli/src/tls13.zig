@@ -732,7 +732,7 @@ pub const Options = struct {
     sni: ?[]const u8 = null,
     /// 传输层读写实现（socket fd、测试桩皆可）。
     stream: Stream,
-    /// true = 跳过证书主机名校验（对应 aio-cli 的 -k/--insecure）。
+    /// true = 跳过证书主机名校验（对应 aiod-cli 的 -k/--insecure）。
     insecure: bool = false,
     /// 覆盖调试开关；默认读环境变量 AIO_TLS_DEBUG。
     debug: ?bool = null,

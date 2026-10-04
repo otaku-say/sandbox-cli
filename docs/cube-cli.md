@@ -6,13 +6,13 @@
 >
 > ```bash
 > zig build -Doptimize=ReleaseFast          # 两个工具都编一遍
-> python3 scripts/gen-docs.py --cube cube-cli --aio aio-cli
+> python3 scripts/gen-docs.py --cube cube-cli --aio aiod-cli
 > ```
 
 `cube-cli` 是 **CubeSandbox 控制面** CLI：建/查/销毁沙箱、选模板、打快照与回滚、
 持久卷、以及沙箱内文件操作（envd 通道）。
 
-- 数据面遥控（执行 / PTY / 浏览器 / 桌面）是另一个工具 [`aio-cli`](aio-cli.md)。
+- 数据面遥控（执行 / PTY / 浏览器 / 桌面）是另一个工具 [`aiod-cli`](aiod-cli.md)。
 - 源码：[`cube-cli/`](https://github.com/otaku-say/sandbox-cli/tree/main/cube-cli)，命令表
   [`cube-cli/src/help.zig`](https://github.com/otaku-say/sandbox-cli/blob/main/cube-cli/src/help.zig)。
 
@@ -45,15 +45,15 @@ cd cube-cli && zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
 
 产物在 `cube-cli/zig-out/bin/cube-cli`，ReleaseFast + strip 后约 1.2 MB 静态单文件。
 
-## 拿到沙箱后交给 aio-cli
+## 拿到沙箱后交给 aiod-cli
 
-`cube-cli new` 输出的 `[sandbox] AIO 网关:` 那行**就是** `aio-cli` 的 `SANDBOX_BASE`：
+`cube-cli new` 输出的 `[sandbox] AIO 网关:` 那行**就是** `aiod-cli` 的 `SANDBOX_BASE`：
 
 ```bash
 SID=$(cube-cli new --note=demo)
-# 输出里：[sandbox] AIO 网关: https://<网关>/sandbox/<sandboxID>/8080/   ← aio-cli 的 SANDBOX_BASE
+# 输出里：[sandbox] AIO 网关: https://<网关>/sandbox/<sandboxID>/8080/   ← aiod-cli 的 SANDBOX_BASE
 export SANDBOX_BASE="https://<网关>/sandbox/$SID/8080"   # 末尾的 / 无所谓
-aio-cli health
+aiod-cli health
 ```
 
 若把二进制搬进沙箱内部执行，`SANDBOX_BASE` 写回环地址即可：`SANDBOX_BASE=http://127.0.0.1:8080`（此时不再经过网关；这也是 `pty-ws` 唯一支持的形态，因为它只能走 `ws://`）。
@@ -89,7 +89,7 @@ cube-cli new -h            # 同上
   - [`connect`](#connect) —— 连接/续期（官方推荐，替代 deprecated 的 resume）
 - **快照 / 卷**
   - [`snap`](#snap) —— 给沙箱打快照
-  - [`snap-ls`](#snapls) —— 快照列表
+  - [`snap-ls`](#snapls) —— 快照列表（x-next-token 翻页）
   - [`snap-rm`](#snaprm) —— 删除快照
   - [`rollback`](#rollback) —— 回滚沙箱到某个快照
   - [`clone`](#clone) —— 打快照并用它当模板批量克隆
@@ -98,11 +98,16 @@ cube-cli new -h            # 同上
   - [`vol-info`](#volinfo) —— 查看持久卷详情
   - [`vol-rm`](#volrm) —— 删除持久卷
 - **模板**
-  - [`tpl-ls`](#tplls) —— 模板列表（含网关端口推断）
+  - [`tpl-ls`](#tplls) —— 模板列表（状态 / 别名 / jobID / lastError）
   - [`tpl-caps`](#tplcaps) —— 模板能力画像（能力 + 端口 + 网关）
   - [`tpl-pick`](#tplpick) —— 按能力挑一个模板
   - [`tpl-info`](#tplinfo) —— 模板详情摘要
   - [`tpl-logs`](#tpllogs) —— 模板构建日志
+  - [`tpl-rm`](#tplrm) —— 删除模板/快照
+  - [`tpl-rebuild`](#tplrebuild) —— 重建模板
+  - [`tpl-build-status`](#tplbuildstatus) —— 模板构建状态
+  - [`tpl-alias`](#tplalias) —— 设置/清除模板别名
+  - [`tpl-resolve`](#tplresolve) —— 别名解析
   - [`tpl-from-image`](#tplfromimage) —— 从 OCI 镜像推导模板默认值
 - **文件**
   - [`cat`](#cat) —— 读沙箱内文件到标准输出（同义词 `read`）
@@ -129,12 +134,14 @@ cube-cli new —— 建沙箱（默认 aio-code 镜像）
 分组: 沙箱
 
 用途:  按能力（--need）或指定模板（--template）新建一个沙箱，并打印 AIO 网关地址
-       （也就是 aio-cli 的 SANDBOX_BASE）。
+       （也就是 aiod-cli 的 SANDBOX_BASE）。
 用法:  cube-cli new [--need=code|browser|desktop] [--template=<模板ID>]
                       [--timeout=<秒>] [--note=<名称>] [--agent=<谁>] [--task=<做什么>]
 参数:  --need=      需要的能力，默认 code。不带任何参数就是 aio-code 镜像（自带 Zig 工具链）
                     browser / desktop 分别对应 aio-daemon / aio-computer 镜像。
-       --template=  直接指定模板 ID，优先于 --need。
+       --template=  直接指定模板：先查服务端别名（与 tpl-resolve 同接口），命中即用；
+                    失败回退本地匹配（模板 ID 全等 / 别名 / 镜像子串唯一命中）；
+                    都未命中则原样交给服务端解析。优先于 --need。
        --timeout=   空闲回收秒数；不传用平台默认。
        --note=      显示名（ls 的"备注"列）。不给时按 "<agent> · <task>" 生成。
        --agent=     谁开的；缺省读环境变量 CUBESANDBOX_AGENT_NAME，再缺省为 cube-cli。
@@ -247,9 +254,11 @@ cube-cli pause —— 暂停沙箱（挂起快照，0 成本）
 分组: 生命周期
 
 用途:  POST /sandboxes/<id>/pause，挂起成快照，磁盘态冻结、不计 CPU/内存。
-用法:  cube-cli pause <sandboxID>
-参数:  <sandboxID>  位置参数，必填。
+用法:  cube-cli pause <sandboxID> [--wait] [--timeout=秒]
+参数:  --wait      轮询沙箱状态直到进入 paused（默认上限 30 秒）。
+       --timeout=  --wait 的上限秒数（默认 30）。
 示例:  cube-cli pause $SID
+       cube-cli pause $SID --wait
 注意:  恢复用 `cube-cli resume <sandboxID>`。
 ```
 
@@ -272,9 +281,10 @@ cube-cli timeout —— 设置空闲回收超时
 分组: 生命周期
 
 用途:  POST /sandboxes/<id>/timeout，改空闲回收时间。
-用法:  cube-cli timeout <sandboxID> <秒>
-参数:  <秒>        位置参数，必填；-1 表示永不回收。
+用法:  cube-cli timeout <sandboxID> <秒>      （等号写法：--timeout=<秒>）
+参数:  <秒>        位置参数或 --timeout=，必填；-1 表示永不回收。
 示例:  cube-cli timeout $SID 7200
+       cube-cli timeout $SID --timeout=7200
        cube-cli timeout $SID -1
 ```
 
@@ -285,9 +295,10 @@ cube-cli refresh —— 续期：新增一个时间窗
 分组: 生命周期
 
 用途:  POST /sandboxes/<id>/refreshes，**新增**一个时间窗（不是从现在起重算）。
-用法:  cube-cli refresh <sandboxID> <秒>
-参数:  <秒>        新增窗口长度，必填。
+用法:  cube-cli refresh <sandboxID> <秒>      （等号写法：--duration=<秒>）
+参数:  <秒>        位置参数或 --duration=，新增窗口长度，必填。
 示例:  cube-cli refresh $SID 3600
+       cube-cli refresh $SID --duration=3600
 注意:  长任务跑到一半时间要到了，用 refresh 续命，别去改 timeout。
 ```
 
@@ -337,14 +348,23 @@ cube-cli snap —— 给沙箱打快照
 ### snap-ls
 
 ```text
-cube-cli snap-ls —— 快照列表
+cube-cli snap-ls —— 快照列表（x-next-token 翻页）
 分组: 快照 / 卷
 
-用途:  GET /snapshots（可按沙箱过滤）。
-用法:  cube-cli snap-ls [--sandbox=<sandboxID>]
-参数:  --sandbox=  只看某个沙箱的快照。
+用途:  GET /snapshots。支持按沙箱/后端过滤、分页与自动翻页。
+用法:  cube-cli snap-ls [--sandbox=<sandboxID>] [--backend=xfs|s3]
+                        [--limit=<每页条数>] [--next=<TOKEN>] [--all] [--json]
+参数:  --sandbox=  只看某个沙箱的快照（sandboxID 查询参数）。
+       --backend=  快照后端过滤（xfs | s3），透传 backend 查询参数。
+       --limit=    每页条数（服务端默认 100、上限 100）。
+       --next=     续页游标，取上一页输出提示里的 x-next-token 值。
+       --all       自动循环翻页直到取完（表格合并打印；--json 输出合并后的数组）。
+       --json      原样输出接口 JSON（不带 --all 时只输出当前页）。
+表格:  快照ID / 状态 / 后端 / 来源沙箱 / 创建时间；翻页读响应头 x-next-token。
 示例:  cube-cli snap-ls --sandbox=$SID
-注意:  源码注释里提到的 `--limit=` **当前未实现**（分页由服务端决定）；输出为原始 JSON。
+       cube-cli snap-ls --limit=10 --all
+       cube-cli snap-ls --limit=10 --next=10
+注意:  不带 --all 时若还有下一页，会打印「下一页: … --next=N（或加 --all 自动翻页）」。
 ```
 
 ### snap-rm
@@ -367,10 +387,14 @@ cube-cli snap-rm —— 删除快照
 cube-cli rollback —— 回滚沙箱到某个快照
 分组: 快照 / 卷
 
-用途:  POST /sandboxes/<id>/rollback。
-用法:  cube-cli rollback <sandboxID> <snapshotID>
-参数:  两个位置参数，均必填。
+用途:  POST /sandboxes/<id>/rollback，打印响应的 operationID / status。
+用法:  cube-cli rollback <sandboxID> <snapshotID> [--wait] [--timeout=秒] [--json]
+参数:  --wait      回滚后轮询沙箱状态到稳定态（running），默认上限 60 秒。
+       --timeout=  --wait 的上限秒数（默认 60）。
+       --json      原样输出响应 JSON。
 示例:  cube-cli rollback $SID snap_abc123
+       cube-cli rollback $SID snap_abc123 --wait
+注意:  404=沙箱或快照不存在；409=生命周期互斥，稍后重试。
 ```
 
 ### clone
@@ -379,11 +403,19 @@ cube-cli rollback —— 回滚沙箱到某个快照
 cube-cli clone —— 打快照并用它当模板批量克隆
 分组: 快照 / 卷
 
-用途:  先给沙箱打快照，再把快照当模板串行建 N 个新沙箱，最后删掉中间快照。
-用法:  cube-cli clone <sandboxID> [--n=<数量>]
-参数:  --n=   克隆个数，默认 1。
-示例:  cube-cli clone $SID --n=3
-注意:  简单串行实现，每个新沙箱的 metadata 为空（不带 agent/task/note）。
+用途:  给沙箱打快照 → 用快照当模板建 N 个新沙箱（并发受 --concurrency 控制，默认 1 串行）
+       → 默认删除中间快照。任一创建失败会回滚已创建的克隆体（要么全给、要么不留孤儿）。
+用法:  cube-cli clone <sandboxID> [--n=N|-n=N] [--concurrency=C] [--timeout=秒]
+                        [--note=名] [--keep-snapshot] [--no-rollback-on-fail]
+参数:  --n= / -n=            克隆个数，默认 1。
+       --concurrency=        同时创建的并发数，默认 1（串行）；自动夹到 [1, N]。
+       --timeout=            新沙箱的空闲回收秒数。
+       --note=               写入克隆体 metadata.note（默认 "<agent> · clone"）。
+       --keep-snapshot       保留中间快照（默认成功后删除）。
+       --no-rollback-on-fail 失败时不回滚已创建的克隆体（默认回滚）。
+示例:  cube-cli clone $SID -n=3
+       cube-cli clone $SID --n=4 --concurrency=2 --note=探索分支
+注意:  成功时逐行打印新沙箱 ID（stdout）；失败时打印原因与回滚结果，退出非 0。
 ```
 
 ### vol-ls
@@ -393,8 +425,9 @@ cube-cli vol-ls —— 列出持久卷
 分组: 快照 / 卷
 
 用途:  GET /volumes。
-用法:  cube-cli vol-ls
-参数:  无。输出为原始 JSON。
+用法:  cube-cli vol-ls [--json]
+参数:  --json  原样输出接口 JSON。
+表格:  卷ID / 名称。
 示例:  cube-cli vol-ls
 ```
 
@@ -405,9 +438,13 @@ cube-cli vol-new —— 新建持久卷
 分组: 快照 / 卷
 
 用途:  POST /volumes。
-用法:  cube-cli vol-new <名字>
-参数:  <名字>  位置参数，必填。
+用法:  cube-cli vol-new [<名字>] [--driver=nfs|cos|s3|...] [--show-token] [--json]
+参数:  <名字>       可选；名字需匹配 ^[A-Za-z0-9_-]+$ 且 ≤128 字符；省略则服务端自动生成。
+       --driver=    卷驱动/插件，如 nfs / cos / host-mount；省略用平台默认。
+       --show-token 显示完整 token（默认脱敏为 ***）。
 示例:  cube-cli vol-new cache-vol
+       cube-cli vol-new --driver=nfs
+注意:  创建返回的 token 默认脱敏；需要完整值加 --show-token。
 ```
 
 ### vol-info
@@ -417,9 +454,11 @@ cube-cli vol-info —— 查看持久卷详情
 分组: 快照 / 卷
 
 用途:  GET /volumes/<id>。
-用法:  cube-cli vol-info <卷ID>
-参数:  <卷ID>  位置参数，必填。
+用法:  cube-cli vol-info <卷ID> [--show-token] [--json]
+参数:  --show-token 显示完整 token（默认脱敏为 ***）。
+       --json       原样输出接口 JSON（默认也脱敏；--show-token 后不脱敏）。
 示例:  cube-cli vol-info vol_abc123
+       cube-cli vol-info vol_abc123 --show-token
 ```
 
 ### vol-rm
@@ -432,6 +471,8 @@ cube-cli vol-rm —— 删除持久卷
 用法:  cube-cli vol-rm <卷ID>
 参数:  <卷ID>  位置参数，必填。
 示例:  cube-cli vol-rm vol_abc123
+注意:  409=卷仍被沙箱挂载（refcount>0）：先销毁挂载它的沙箱，再删卷；
+       404 视为已删除（幂等成功）。
 ```
 
 ## 模板
@@ -439,13 +480,17 @@ cube-cli vol-rm —— 删除持久卷
 ### tpl-ls
 
 ```text
-cube-cli tpl-ls —— 模板列表（含网关端口推断）
+cube-cli tpl-ls —— 模板列表（状态 / 别名 / jobID / lastError）
 分组: 模板
 
 用途:  GET /templates，逐个模板取详情并推断网关端口。
-用法:  cube-cli tpl-ls [--json]
-参数:  --json  原样输出服务端 JSON（不做表格化，也跳过端口推断）。
+用法:  cube-cli tpl-ls [--instance-type=] [--status=] [--json]
+参数:  --instance-type=  按实例类型过滤（本地过滤）。
+       --status=         按状态过滤（本地过滤，大小写不敏感）。
+       --json            原样输出服务端 JSON；加过滤时输出过滤后的数组。
+表格:  模板ID / 状态 / 别名 / jobID / lastError / 网关 / 镜像。
 示例:  cube-cli tpl-ls
+       cube-cli tpl-ls --status=READY
        cube-cli tpl-ls --json | python3 -m json.tool
 ```
 
@@ -506,6 +551,80 @@ cube-cli tpl-logs —— 模板构建日志
 示例:  cube-cli tpl-logs tpl-4850162aafbb41ad97516762 bld_abc123
 ```
 
+### tpl-rm
+
+```text
+cube-cli tpl-rm —— 删除模板/快照
+分组: 模板
+
+用途:  DELETE /templates/<id>。模板与快照共用这个端点（快照删除会返回 x-operation-id 响应头）。
+用法:  cube-cli tpl-rm <模板ID|快照ID> [--sync] [--instance-type=]
+参数:  --sync           等待服务端删除完成（sync=true）。
+       --instance-type= 实例类型过滤（instance_type 查询参数）。
+示例:  cube-cli tpl-rm tpl-4850162aafbb41ad97516762
+       cube-cli tpl-rm snap_abc123
+注意:  不可恢复；404 视为已删除（幂等成功）。
+```
+
+### tpl-rebuild
+
+```text
+cube-cli tpl-rebuild —— 重建模板
+分组: 模板
+
+用途:  POST /templates/<id>（202 受理），返回构建任务 jobID/status/phase/progress。
+用法:  cube-cli tpl-rebuild <模板ID> [--wait] [--timeout=秒] [--json]
+参数:  --wait      轮询构建状态到终态（ready=成功 / failed=失败），默认上限 900 秒。
+       --timeout=  --wait 的上限秒数（默认 900）。
+       --json      原样输出响应 JSON（--wait 结束时再输出一行终态 JSON）。
+示例:  cube-cli tpl-rebuild tpl-4850162aafbb41ad97516762
+       cube-cli tpl-rebuild tpl-4850162aafbb41ad97516762 --wait
+```
+
+### tpl-build-status
+
+```text
+cube-cli tpl-build-status —— 模板构建状态
+分组: 模板
+
+用途:  GET /templates/<id>/builds/<bid>/status，打印 状态 / 进度 / 消息。
+用法:  cube-cli tpl-build-status <模板ID> <buildID> [--wait] [--timeout=秒] [--json]
+参数:  --wait      轮询到终态（ready=成功 / failed=失败），默认上限 900 秒。
+       --timeout=  --wait 的上限秒数（默认 900）。
+       --json      原样输出接口 JSON。
+示例:  cube-cli tpl-build-status tpl-4850162aafbb41ad97516762 286dc111-d249-4f6f-aa55-0d3cee623879
+       cube-cli tpl-build-status tpl-xxx build-xxx --wait
+```
+
+### tpl-alias
+
+```text
+cube-cli tpl-alias —— 设置/清除模板别名
+分组: 模板
+
+用途:  PUT /templates/<id>/alias，body {"alias":"..."}。
+用法:  cube-cli tpl-alias <模板ID> [<别名>] [--json]
+参数:  <别名>  省略或给空串 = 清除别名（alias:""）；给出则设置。
+       --json  原样输出接口 JSON。
+示例:  cube-cli tpl-alias tpl-4850162aafbb41ad97516762 my-aio
+       cube-cli tpl-alias tpl-4850162aafbb41ad97516762        # 清除别名
+注意:  别名需匹配 ^[a-z0-9][a-z0-9-]{0,63}$ 且不能以 tpl-/snap- 开头；
+       400=别名非法或目标不支持（快照不能设别名）；409=模板未就绪/并发占用，可重试。
+```
+
+### tpl-resolve
+
+```text
+cube-cli tpl-resolve —— 别名解析
+分组: 模板
+
+用途:  GET /templates/aliases/<alias>，打印 templateID。
+用法:  cube-cli tpl-resolve <别名> [--json]
+参数:  --json  原样输出接口 JSON。
+示例:  cube-cli tpl-resolve my-aio
+注意:  404=别名不存在。`new --template=<别名>` 会先走这个接口。
+```
+
 ### tpl-from-image
 
 ```text
@@ -513,19 +632,30 @@ cube-cli tpl-from-image —— 从 OCI 镜像推导模板默认值
 分组: 模板
 
 用途:  读镜像标签 io.cubesandbox.template.*（无端口标签时回退 Config.ExposedPorts），
-       推导出一份建模板请求体；可只打印、可输出 curl、可直接提交。
-用法:  cube-cli tpl-from-image <镜像引用> [--alias=<名>] [--cpu=<核>] [--memory=<MiB>]
+       推导出一份建模板请求体；可只打印、可输出 curl、可直接提交并等构建终态。
+用法:  cube-cli tpl-from-image <镜像引用> [--alias=<别名>] [--name=<名称>] [--cpu=<核>] [--memory=<MiB>]
                        [--writable=<大小>] [--env=K=V,...] [--platform=linux/amd64]
-                       [--registry-user=<u>] [--registry-pass=<p>] [--json|--curl|--create]
+                       [--instance-type=] [--network-type=] [--allow-out=] [--deny-out=]
+                       [--dns=] [--node=] [--cmd=] [--args=] [--no-internet] [--ivshmem] [--no-cube-ca]
+                       [--registry-user=<u>] [--registry-pass=<p>] [--json|--curl|--create [--no-wait]]
 参数:  <镜像引用>      如 ghcr.io/org/img:tag（位置参数，必填）。
        --json          只输出请求体 JSON。
        --curl          输出可直接执行的 curl 命令。
-       --create        直接 POST 提交到平台（需要控制面环境变量）。
-       --platform=     目标平台，默认 linux/amd64（aarch64 镜像写 linux/arm64）。
-       --alias=        模板显示名；--cpu= / --memory= / --writable= / --env=K=V,.. 覆盖推导值。
+       --create        直接 POST 提交到平台；**默认 --wait** 轮询构建到终态（--no-wait 关闭）。
+       --alias=        模板别名（写 alias 字段）；--name= 写 name 字段。二者不同，别混用。
+       --cpu= / --memory= / --writable= / --env=K=V,.. 覆盖推导值。
+       --instance-type= / --network-type=  实例类型 / 网络模式（如 tap）。
+       --allow-out= / --deny-out=  出站 CIDR 白/黑名单（逗号分隔）。
+       --dns=          容器 DNS（逗号分隔）。
+       --node=         限定分发节点（nodes，逗号分隔）。
+       --cmd= / --args= 覆盖容器 ENTRYPOINT / CMD（逗号分隔）。
+       --no-internet   allowInternetAccess=false。
+       --ivshmem       建模板快照时启用 ivshmem（enableIvshmem=true）。
+       --no-cube-ca    不把 CubeEgress 根证书烤进模板 rootfs（with_cube_ca=false）。
+       --timeout=      --create 等待的上限秒数（默认 1800）。
 示例:  cube-cli tpl-from-image ghcr.io/otaku-say/cubesandbox-image/agent-infra/sandbox:aio-code
        cube-cli tpl-from-image myreg.io/app:v1 --json --platform=linux/arm64
-       cube-cli tpl-from-image ghcr.io/org/img:latest --curl
+       cube-cli tpl-from-image ghcr.io/org/img:latest --alias=my-app --create
 注意:  只需 registry 匿名读权限；私有镜像用 --registry-user/--registry-pass。
        镜像没声明可写层大小时会按 12G 估计并给 ⚠️ 提示（--writable= 可覆盖）。
 ```
@@ -558,7 +688,7 @@ cube-cli write —— 把本地文件（或 stdin）写进沙箱
 参数:  <本地文件|->  位置参数；`-` 表示从 stdin 读（上限 8 MiB）。
 示例:  cube-cli write $SID ./data.csv /home/gem/data.csv
        echo hi | cube-cli write $SID - /tmp/hi.txt
-注意:  整体覆盖写，不支持追加；大文件（> 8 MiB）请用 aio-cli 的 put/fs-tree-put。
+注意:  整体覆盖写，不支持追加；大文件（> 8 MiB）请用 aiod-cli 的 put/fs-tree-put。
 ```
 
 ### get

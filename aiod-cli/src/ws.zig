@@ -1,6 +1,6 @@
 //! 手写 WebSocket 客户端（RFC 6455 子集）：握手 + 帧编解码。
 //!
-//! 用途：aio-cli 的 pty-ws（附着终端）。
+//! 用途：aiod-cli 的 pty-ws（附着终端）。
 //! 传输层支持：
 //!   - **ws://（明文）**：socket 直连（行为与旧版一致）；
 //!   - **wss://（TLS 1.3）**：在 socket 之上套本仓库手写的 tls13.zig

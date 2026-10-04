@@ -186,7 +186,7 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
     if (gw == 0) return;
     const proxy = cfg.proxyURL() orelse return;
     const base = try std.fmt.allocPrint(c.arena, "{s}/sandbox/{s}", .{ ctxmod.trimSlash(proxy), sid });
-    std.debug.print("[sandbox] AIO 网关: {s}/{d}/   ← aio-cli 的 SANDBOX_BASE\n", .{ base, gw });
+    std.debug.print("[sandbox] AIO 网关: {s}/{d}/   ← aiod-cli 的 SANDBOX_BASE\n", .{ base, gw });
     std.debug.print("[sandbox] envd    : {s}/49983/\n", .{base});
 }
 

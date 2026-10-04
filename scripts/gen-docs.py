@@ -7,7 +7,7 @@
 用法（在仓库根目录执行，两个二进制都要先 zig build 好）：
     python3 scripts/gen-docs.py \
         --cube cube-cli/zig-out/bin/cube-cli \
-        --aio  aio-cli/zig-out/bin/aio-cli
+        --aio  aiod-cli/zig-out/bin/aiod-cli
 """
 import argparse
 import re
@@ -57,7 +57,7 @@ def build_doc(binary, title, intro_md, table, extra_head_md):
         ">",
         "> ```bash",
         "> zig build -Doptimize=ReleaseFast          # 两个工具都编一遍",
-        f"> python3 scripts/gen-docs.py --cube {Path(binary).name} --aio aio-cli",
+        f"> python3 scripts/gen-docs.py --cube {Path(binary).name} --aio aiod-cli",
         "> ```",
         "",
         intro_md,
@@ -95,7 +95,7 @@ def build_doc(binary, title, intro_md, table, extra_head_md):
 CUBE_INTRO = """`cube-cli` 是 **CubeSandbox 控制面** CLI：建/查/销毁沙箱、选模板、打快照与回滚、
 持久卷、以及沙箱内文件操作（envd 通道）。
 
-- 数据面遥控（执行 / PTY / 浏览器 / 桌面）是另一个工具 [`aio-cli`](aio-cli.md)。
+- 数据面遥控（执行 / PTY / 浏览器 / 桌面）是另一个工具 [`aiod-cli`](aiod-cli.md)。
 - 源码：[`cube-cli/`](https://github.com/otaku-say/sandbox-cli/tree/main/cube-cli)，命令表
   [`cube-cli/src/help.zig`](https://github.com/otaku-say/sandbox-cli/blob/main/cube-cli/src/help.zig)。"""
 
@@ -130,15 +130,15 @@ CUBE_HEAD = [
     "",
     "产物在 `cube-cli/zig-out/bin/cube-cli`，ReleaseFast + strip 后约 1.2 MB 静态单文件。",
     "",
-    "## 拿到沙箱后交给 aio-cli",
+    "## 拿到沙箱后交给 aiod-cli",
     "",
-    "`cube-cli new` 输出的 `[sandbox] AIO 网关:` 那行**就是** `aio-cli` 的 `SANDBOX_BASE`：",
+    "`cube-cli new` 输出的 `[sandbox] AIO 网关:` 那行**就是** `aiod-cli` 的 `SANDBOX_BASE`：",
     "",
     "```bash",
     "SID=$(cube-cli new --note=demo)",
-    "# 输出里：[sandbox] AIO 网关: https://<网关>/sandbox/<sandboxID>/8080/   ← aio-cli 的 SANDBOX_BASE",
+    "# 输出里：[sandbox] AIO 网关: https://<网关>/sandbox/<sandboxID>/8080/   ← aiod-cli 的 SANDBOX_BASE",
     "export SANDBOX_BASE=\"https://<网关>/sandbox/$SID/8080\"   # 末尾的 / 无所谓",
-    "aio-cli health",
+    "aiod-cli health",
     "```",
     "",
     "若把二进制搬进沙箱内部执行，`SANDBOX_BASE` 写回环地址即可：`SANDBOX_BASE=http://127.0.0.1:8080`"
@@ -158,12 +158,12 @@ CUBE_HEAD = [
     "**`--key=value`** 等号形式；布尔开关直接写 `--flag`（不要写 `--flag=true`）。",
 ]
 
-AIO_INTRO = """`aio-cli` 是 **沙箱内 aiod v2 API 遥控** CLI：命令执行、文件传输、PTY 终端、
+AIO_INTRO = """`aiod-cli` 是 **沙箱内 aiod v2 API 遥控** CLI：命令执行、文件传输、PTY 终端、
 代码解释器、浏览器、文件监听、MCP、桌面 computer-use。
 
 - 建沙箱 / 选模板 / 快照 / 卷 是另一个工具 [`cube-cli`](cube-cli.md)。
-- 源码：[`aio-cli/`](https://github.com/otaku-say/sandbox-cli/tree/main/aio-cli)，命令表
-  [`aio-cli/src/help.zig`](https://github.com/otaku-say/sandbox-cli/blob/main/aio-cli/src/help.zig)。"""
+- 源码：[`aiod-cli/`](https://github.com/otaku-say/sandbox-cli/tree/main/aiod-cli)，命令表
+  [`aiod-cli/src/help.zig`](https://github.com/otaku-say/sandbox-cli/blob/main/aiod-cli/src/help.zig)。"""
 
 AIO_HEAD = [
     "## 环境变量",
@@ -194,27 +194,27 @@ AIO_HEAD = [
     "",
     "```bash",
     "# 本机架构",
-    "cd aio-cli && zig build -Doptimize=ReleaseFast",
+    "cd aiod-cli && zig build -Doptimize=ReleaseFast",
     "# 交叉编译到 ARM（iSH / 手机 / aarch64 机器）",
-    "cd aio-cli && zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl",
+    "cd aiod-cli && zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl",
     "```",
     "",
     "| 目标三元组 | 产物文件名 | 用在哪 |",
     "|---|---|---|",
-    "| `aarch64-linux-musl` | `aio-cli-aarch64-linux-musl` | iSH（iOS）、ARM 服务器 |",
-    "| `x86_64-linux-musl` | `aio-cli-x86_64-linux-musl` | x86 服务器、桌面 Linux |",
+    "| `aarch64-linux-musl` | `aiod-cli-aarch64-linux-musl` | iSH（iOS）、ARM 服务器 |",
+    "| `x86_64-linux-musl` | `aiod-cli-x86_64-linux-musl` | x86 服务器、桌面 Linux |",
     "",
-    "产物在 `aio-cli/zig-out/bin/aio-cli`，ReleaseFast + strip 后约 1.1 MB 静态单文件。",
+    "产物在 `aiod-cli/zig-out/bin/aiod-cli`，ReleaseFast + strip 后约 1.1 MB 静态单文件。",
     "",
     "## 快速上手",
     "",
     "```bash",
     "export SANDBOX_BASE=\"https://<网关>/sandbox/<sandboxID>/8080\"",
-    "aio-cli health",
-    "aio-cli sandbox-info",
-    "aio-cli exec 'zig version'",
-    "aio-cli write ./report.md /home/gem/report.md && aio-cli cat /home/gem/report.md",
-    "ID=$(aio-cli async 'pip install -q pandas'); aio-cli log \"$ID\" --follow",
+    "aiod-cli health",
+    "aiod-cli sandbox-info",
+    "aiod-cli exec 'zig version'",
+    "aiod-cli write ./report.md /home/gem/report.md && aiod-cli cat /home/gem/report.md",
+    "ID=$(aiod-cli async 'pip install -q pandas'); aiod-cli log \"$ID\" --follow",
     "```",
     "",
     "## 通用约定",
@@ -228,11 +228,11 @@ AIO_HEAD = [
     "## 帮助怎么用",
     "",
     "```bash",
-    "aio-cli help              # 分组速查（58 行，常用命令）",
-    "aio-cli help all          # 完整命令表，一条一行",
-    "aio-cli help pty-ws       # 单命令详解（本文档对应小节）",
-    "aio-cli pty-ws --help     # 同上，**只打印不执行**",
-    "aio-cli pty-ws -h         # 同上",
+    "aiod-cli help              # 分组速查（58 行，常用命令）",
+    "aiod-cli help all          # 完整命令表，一条一行",
+    "aiod-cli help pty-ws       # 单命令详解（本文档对应小节）",
+    "aiod-cli pty-ws --help     # 同上，**只打印不执行**",
+    "aiod-cli pty-ws -h         # 同上",
     "```",
     "",
     "`help` 系列**不需要** `SANDBOX_BASE`。未知命令会打印「未知命令：xxx」并以退出码 1 结束。",
@@ -254,10 +254,10 @@ def main():
     (out / "cube-cli.md").write_text(cube, encoding="utf-8")
     print(f"wrote {out/'cube-cli.md'}  {len(cube.splitlines())} 行")
 
-    aio = build_doc(args.aio, "aio-cli 命令手册", AIO_INTRO,
+    aio = build_doc(args.aio, "aiod-cli 命令手册", AIO_INTRO,
                     parse_table(args.aio), AIO_HEAD)
-    (out / "aio-cli.md").write_text(aio, encoding="utf-8")
-    print(f"wrote {out/'aio-cli.md'}  {len(aio.splitlines())} 行")
+    (out / "aiod-cli.md").write_text(aio, encoding="utf-8")
+    print(f"wrote {out/'aiod-cli.md'}  {len(aio.splitlines())} 行")
 
 
 if __name__ == "__main__":

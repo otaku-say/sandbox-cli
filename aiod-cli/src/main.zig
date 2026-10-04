@@ -1,4 +1,4 @@
-//! aio-cli —— 沙箱内 aiod v2 API 遥控 CLI
+//! aiod-cli —— 沙箱内 aiod v2 API 遥控 CLI
 //!
 //! 约定：所有部署相关取值通过环境变量传入（SANDBOX_BASE / SANDBOX_KEY），
 //! 仓库内不含任何主机名、IP 或凭据。
@@ -94,7 +94,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         try out.print("  带端口的完整网关: https://<网关>/sandbox/<sandboxID>/8080\n", .{});
         try out.print("  沙箱内自测        : http://127.0.0.1:8080\n", .{});
         try out.print("值可用 `cube-cli new` 输出的 [sandbox] AIO 网关那行；末尾多余的 / 会自动去掉。\n", .{});
-        try out.print("（`aio-cli help` 不需要这个变量。）\n", .{});
+        try out.print("（`aiod-cli help` 不需要这个变量。）\n", .{});
         exitWith(out, 1);
     };
 

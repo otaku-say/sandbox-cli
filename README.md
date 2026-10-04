@@ -7,7 +7,7 @@ CubeSandbox 命令行工具集，Zig 实现，静态单文件分发。
 | 目录 | 工具 | 作用 |
 |---|---|---|
 | `cube-cli/` | `cube-cli` | **控制面**：沙箱生命周期、模板画像与选择、快照/分叉、持久卷 |
-| `aio-cli/` | `aio-cli` | **沙箱内 v2 API 遥控**：命令执行、文件传输、PTY 终端、浏览器、代码解释器 |
+| `aiod-cli/` | `aiod-cli` | **沙箱内 v2 API 遥控**：命令执行、文件传输、PTY 终端、浏览器、代码解释器 |
 
 ## DNS 容错（iSH 等环境必需）
 
@@ -62,7 +62,7 @@ Zig 静态链接 musl，无 runtime、无 GC，启动接近 C 程序。
 
 仅支持 CUBESANDBOX_* 新命名（旧名不再兼容）。
 
-**aio-cli（数据面）**
+**aiod-cli（数据面）**
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
@@ -78,23 +78,23 @@ Zig 静态链接 musl，无 runtime、无 GC，启动接近 C 程序。
 ```bash
 # 本机架构
 cd cube-cli && zig build -Doptimize=ReleaseFast        # → zig-out/bin/cube-cli
-cd aio-cli  && zig build -Doptimize=ReleaseFast        # → zig-out/bin/aio-cli
+cd aiod-cli  && zig build -Doptimize=ReleaseFast        # → zig-out/bin/aiod-cli
 
 # 交叉编译到 ARM（iSH / 手机 / aarch64 机器）
 cd cube-cli && zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
-cd aio-cli  && zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
+cd aiod-cli  && zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
 ```
 
 | 目标三元组 | 产物文件名 | 用在哪 |
 |---|---|---|
-| `aarch64-linux-musl` | `cube-cli-aarch64-linux-musl` / `aio-cli-aarch64-linux-musl` | iSH（iOS）、ARM 服务器 |
-| `x86_64-linux-musl` | `cube-cli-x86_64-linux-musl` / `aio-cli-x86_64-linux-musl` | x86 服务器、桌面 Linux |
+| `aarch64-linux-musl` | `cube-cli-aarch64-linux-musl` / `aiod-cli-aarch64-linux-musl` | iSH（iOS）、ARM 服务器 |
+| `x86_64-linux-musl` | `cube-cli-x86_64-linux-musl` / `aiod-cli-x86_64-linux-musl` | x86 服务器、桌面 Linux |
 
 两种架构都必须能编过；ReleaseFast + strip 后每个约 1.1–1.3 MB 静态单文件。
 
 ## 命令速查：先看 `help`
 
-**`help` 就是权威命令面。** 命令表在 `cube-cli/src/help.zig` 与 `aio-cli/src/help.zig`，
+**`help` 就是权威命令面。** 命令表在 `cube-cli/src/help.zig` 与 `aiod-cli/src/help.zig`，
 `docs/*.md` 由 `scripts/gen-docs.py` 从**编译产物**自动生成——**文档随代码走**，
 改了命令先改 `help.zig`，再跑一次生成脚本，README 不再重复维护命令清单。
 
@@ -119,26 +119,26 @@ cube-cli exec <sandboxID> 'zig version' --timeout=300
 cube-cli snap <sandboxID> --name=before-refactor
 ```
 
-`aio-cli` 常用（先 `export SANDBOX_BASE=...`）：
+`aiod-cli` 常用（先 `export SANDBOX_BASE=...`）：
 
 ```bash
-aio-cli health
-aio-cli exec 'zig version' --timeout=600000
-aio-cli write ./a.md /home/gem/a.md && aio-cli cat /home/gem/a.md
-aio-cli br-go https://example.com && aio-cli br-shot shot.png
-ID=$(aio-cli async 'sleep 60'); aio-cli log "$ID" --follow; aio-cli kill "$ID"
+aiod-cli health
+aiod-cli exec 'zig version' --timeout=600000
+aiod-cli write ./a.md /home/gem/a.md && aiod-cli cat /home/gem/a.md
+aiod-cli br-go https://example.com && aiod-cli br-shot shot.png
+ID=$(aiod-cli async 'sleep 60'); aiod-cli log "$ID" --follow; aiod-cli kill "$ID"
 ```
 
 ### 逐条文档
 
 - [`docs/cube-cli.md`](docs/cube-cli.md) —— cube-cli 全部 37 条命令
-- [`docs/aio-cli.md`](docs/aio-cli.md) —— aio-cli 全部 76 条命令
+- [`docs/aiod-cli.md`](docs/aiod-cli.md) —— aiod-cli 全部 76 条命令
 
 重新生成：
 
 ```bash
-cd cube-cli && zig build -Doptimize=ReleaseFast && cd ../aio-cli && zig build -Doptimize=ReleaseFast
-cd .. && python3 scripts/gen-docs.py --cube cube-cli/zig-out/bin/cube-cli --aio aio-cli/zig-out/bin/aio-cli
+cd cube-cli && zig build -Doptimize=ReleaseFast && cd ../aiod-cli && zig build -Doptimize=ReleaseFast
+cd .. && python3 scripts/gen-docs.py --cube cube-cli/zig-out/bin/cube-cli --aio aiod-cli/zig-out/bin/aiod-cli
 ```
 
 ### 冒烟测试

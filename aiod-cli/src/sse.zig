@@ -1,6 +1,6 @@
 //! sse.zig —— SSE（Server-Sent Events）流式客户端（零依赖，手写）。
 //!
-//! 用途：aio-cli 的 watch-events（GET /v2/watch/<id>/events）。
+//! 用途：aiod-cli 的 watch-events（GET /v2/watch/<id>/events）。
 //!
 //! 实测流格式（aio-daemon 0.9.2，Rust axum 后端）：
 //!   event: watch_started\ndata: {"watcher_id":"..."}\n\n

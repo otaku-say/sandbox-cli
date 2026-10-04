@@ -360,7 +360,7 @@ fn cmdFsTreePut(c: *Ctx, a: util.Args) !void {
     var payload = raw;
     if (raw.len >= 2 and raw[0] == 0x1f and raw[1] == 0x8b) {
         payload = gunzip(c.arena, raw) catch |e| {
-            try c.out.print("gzip 解压失败（{t}）\n提示：可先在本地解压：gunzip -c x.tgz | aio-cli fs-tree-put - <远端目录>\n", .{e});
+            try c.out.print("gzip 解压失败（{t}）\n提示：可先在本地解压：gunzip -c x.tgz | aiod-cli fs-tree-put - <远端目录>\n", .{e});
             return e;
         };
         std.debug.print("提示: 输入为 gzip，已在本地解压为原始 tar 再上传\n", .{});
