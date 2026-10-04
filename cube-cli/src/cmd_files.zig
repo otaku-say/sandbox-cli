@@ -171,6 +171,24 @@ fn cmdMv(c: *Ctx, a: util.Args) !void {
     try c.out.print("mv {s} -> {s}\n", .{ src, dst });
 }
 
+/// get <sid> <远端路径> <本地文件>  —— 下载到本地（二进制安全）
+fn cmdGet(c: *Ctx, a: util.Args) !void {
+    const sid = a.at(0) orelse return error.MissingArg;
+    const remote = a.at(1) orelse return error.MissingArg;
+    const local = a.at(2) orelse return error.MissingArg;
+    const t = try target(c, sid);
+    const res = try envd.readFile(c.arena, c.client, t.base, t.token, a.get("user"), remote, t.buf);
+    if (!res.ok()) return fail(c, res);
+    const dir = std.Io.Dir.cwd();
+    const f = try dir.createFile(c.io, local, .{});
+    defer f.close(c.io);
+    var wbuf: [8192]u8 = undefined;
+    var w = f.writer(c.io, &wbuf);
+    try w.interface.writeAll(res.body);
+    try w.interface.flush();
+    try c.out.print("saved {d} bytes -> {s}\n", .{ res.body.len, local });
+}
+
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
@@ -179,6 +197,10 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     const a = try util.parse(c.arena, argv);
     if (eq(cmd, "cat") or eq(cmd, "read")) {
         try cmdCat(c, a);
+        return true;
+    }
+    if (eq(cmd, "get")) {
+        try cmdGet(c, a);
         return true;
     }
     if (eq(cmd, "write")) {

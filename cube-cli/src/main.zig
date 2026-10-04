@@ -139,11 +139,23 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
 
     const buf = try c.arena.alloc(u8, BUF);
     const res = try c.control(.POST, "/sandboxes", payload, buf);
-    if (envd.extractString(c.arena, res.body, "sandboxID")) |sid| {
-        try c.out.print("{s}\n", .{sid});
-    } else {
+    const sid = envd.extractString(c.arena, res.body, "sandboxID") orelse {
         try c.out.print("{s}\n", .{res.body});
-    }
+        return;
+    };
+    try c.out.print("{s}\n", .{sid});
+
+    // 提示网关与端点（查模板详情拿端口，推断 aiod 网关）
+    const detail_path = try std.fmt.allocPrint(c.arena, "/templates/{s}", .{tpl});
+    const dres = c.control(.GET, detail_path, null, buf) catch return;
+    const raw_ports = envd.extractString(c.arena, dres.body, "com.exposed_ports") orelse return;
+    const ports = cmd_template.parsePorts(c.arena, raw_ports) catch return;
+    const gw = cmd_template.guessGateway(ports, "");
+    if (gw == 0) return;
+    const proxy = cfg.proxyURL() orelse return;
+    const base = try std.fmt.allocPrint(c.arena, "{s}/sandbox/{s}", .{ ctxmod.trimSlash(proxy), sid });
+    try c.out.print("[sandbox] AIO 网关: {s}/{d}/   ← aio-cli 的 SANDBOX_BASE\n", .{ base, gw });
+    try c.out.print("[sandbox] envd    : {s}/49983/\n", .{base});
 }
 
 fn cmdList(c: *Ctx) !void {
