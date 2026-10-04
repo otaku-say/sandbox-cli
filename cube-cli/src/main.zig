@@ -92,7 +92,8 @@ fn usage(out: *std.Io.Writer) !void {
         \\cube-cli (zig) {s} —— CubeSandbox 控制面 CLI
         \\
         \\沙箱:
-        \\  cube-cli new --template=<ID> [--timeout=秒] [--note=名称]
+        \\  cube-cli new [--need=code|browser|desktop] [--timeout=秒] [--note=名称]
+        \\              默认 --need=code（aio-code 沙箱，自带 Zig 工具链）
         \\  cube-cli ls                    列出沙箱
         \\  cube-cli rm <sandboxID>        销毁沙箱
         \\  cube-cli exec <sandboxID> <命令...> [--cwd=]
@@ -127,15 +128,16 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
     var tpl: []const u8 = "";
     if (a.get("template")) |t| {
         tpl = t;
-    } else if (a.get("need")) |need| {
+    } else {
+        // 默认 --need=code（aio-code 沙箱：不需要浏览器时的一律选择；
+        // 需要浏览器/桌面时显式给 --need=browser|desktop）
+        const need = a.get("need") orelse "code";
         const p = cmd_template.pickByNeed(c, need) catch {
             try c.out.print("没有满足 --need={s} 的 READY 模板\n", .{need});
             return error.NotFound;
         };
         tpl = p.id;
         std.debug.print("[template] --need={s} → {s}\n", .{ need, p.id });
-    } else {
-        return error.MissingArg;
     }
 
     var timeout_part: []const u8 = "";
