@@ -57,7 +57,7 @@ Zig 静态链接 musl，无 runtime、无 GC，启动接近 C 程序。
 | `CUBESANDBOX_API_KEY` | 控制面 API Key（部署未启用鉴权时可省略） |
 | `CUBESANDBOX_PROXY_URL` | 数据面网关地址（拼沙箱访问 URL 用） |
 
-旧命名 `CUBE_API_URL` / `CUBE_API_KEY` / `CBS_PROXY_BASE` 仍兼容。
+仅支持 CUBESANDBOX_* 新命名（旧名不再兼容）。
 
 ## 构建
 
