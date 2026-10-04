@@ -24,6 +24,8 @@ const cmd_info = @import("cmd_info.zig");
 const cmd_logs = @import("cmd_logs.zig");
 const cmd_raw = @import("cmd_raw.zig");
 const cmd_connect = @import("cmd_connect.zig");
+const cmd_proc = @import("cmd_proc.zig");
+const cmd_pty = @import("cmd_pty.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -117,6 +119,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (try cmd_logs.dispatch(&ctx, cmd, args)) return;
     if (try cmd_raw.dispatch(&ctx, cmd, args)) return;
     if (try cmd_connect.dispatch(&ctx, cmd, args)) return;
+    // ---- 第二批（SDK 全量对齐）：异步执行族 / PTY 原语 ----
+    if (try cmd_proc.dispatch(&ctx, cmd, args)) return;
+    if (try cmd_pty.dispatch(&ctx, cmd, args)) return;
 
     try help.printUnknown(out, cmd);
     exitWith(out, 1);
@@ -167,7 +172,8 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
         } else |_| {}
     }
     const meta_part = try buildMetadata(c, a);
-    const payload = try std.fmt.allocPrint(c.arena, "{{\"templateID\":\"{s}\"{s}{s}}}", .{ tpl, timeout_part, meta_part });
+    const extra_part = try buildCreateExtras(c, a);
+    const payload = try std.fmt.allocPrint(c.arena, "{{\"templateID\":\"{s}\"{s}{s}{s}}}", .{ tpl, timeout_part, meta_part, extra_part });
 
     const buf = try c.arena.alloc(u8, BUF);
     const res = try c.control(.POST, "/sandboxes", payload, buf);
@@ -190,15 +196,32 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
     std.debug.print("[sandbox] envd    : {s}/49983/\n", .{base});
 }
 
-/// code <sid> <代码...> [--lang=python|js|bash] [--timeout=秒] [--env=...]
-/// 用解释器直接跑代码（等价 exec python3 -c ...；不依赖 Jupyter 内核，任何镜像可用）。
+/// code <sid> <代码...> [--mode=interp|kernel] [--lang=python|js|bash] [--timeout=秒] [--env=...] [--user=]
+/// interp（默认）：等价 exec python3 -c ...（不依赖解释器服务，任何镜像可用）。
+/// kernel：SDK run_code 的通道 —— POST <proxy>/sandbox/<sid>/49999/execute（ndjson）。
 fn cmdCode(c: *Ctx, args: []const []const u8) !void {
     const a = try util.parse(c.arena, args);
     if (a.pos.len < 2) return error.MissingArg;
     const sid = a.pos[0];
     const src = a.joinFrom(1, " ");
     const lang = a.get("lang") orelse "python";
-    const q = try shellQuote(c.arena, src);
+    const envs_json = try util.envsJson(c.arena, a.flags);
+    var timeout_ms: u64 = 0;
+    if (a.get("timeout")) |t| {
+        if (std.fmt.parseInt(u64, t, 10)) |n| timeout_ms = n * 1000 else |_| {}
+    }
+
+    if (a.get("mode")) |m| {
+        if (util.eq(m, "kernel")) {
+            return cmd_proc.kernelRun(c, sid, src, a.get("lang"), envs_json, timeout_ms);
+        }
+        if (!util.eq(m, "interp")) {
+            try c.out.print("不支持的模式: {s}（可选 interp / kernel）\n", .{m});
+            return error.BadArg;
+        }
+    }
+
+    const q = try util.shellQuote(c.arena, src);
     const cmd = if (eq(lang, "python") or eq(lang, "python3"))
         try std.fmt.allocPrint(c.arena, "python3 -c {s}", .{q})
     else if (eq(lang, "js") or eq(lang, "javascript") or eq(lang, "node") or eq(lang, "nodejs"))
@@ -209,73 +232,21 @@ fn cmdCode(c: *Ctx, args: []const []const u8) !void {
         try c.out.print("不支持的语言: {s}（可选 python / js / bash）\n", .{lang});
         return error.BadLang;
     };
-    const envs_json = try envsFromFlags(c, a);
-    var timeout_ms: u64 = 120_000;
-    if (a.get("timeout")) |t| {
-        if (std.fmt.parseInt(u64, t, 10)) |n| timeout_ms = n * 1000 else |_| {}
-    }
-    try runInSandbox(c, sid, cmd, null, if (envs_json.len > 0) envs_json else null, timeout_ms);
-}
-
-/// 从 --env=K=V / --env=NAME 构建 envs JSON（值从本机环境读时不出现在命令行）。
-fn envsFromFlags(c: *Ctx, a: util.Args) ![]const u8 {
-    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 32 << 10));
-    var first = true;
-    for (a.flags) |kv| {
-        if (!std.mem.eql(u8, kv[0], "env")) continue;
-        var name: []const u8 = kv[1];
-        var value: []const u8 = "";
-        if (std.mem.indexOfScalar(u8, kv[1], '=')) |i| {
-            name = kv[1][0..i];
-            value = kv[1][i + 1 ..];
-        } else {
-            const z = try c.arena.allocSentinel(u8, kv[1].len, 0);
-            @memcpy(z[0..kv[1].len], kv[1]);
-            const p = std.c.getenv(z.ptr) orelse continue;
-            value = std.mem.span(p);
-        }
-        if (!first) try w.print(",", .{});
-        first = false;
-        try w.print("\"{s}\":\"{s}\"", .{ name, try envd.jsonEscape(c.arena, value) });
-    }
-    return w.buffered();
+    try runInSandbox(c, sid, cmd, null, if (envs_json.len > 0) envs_json else null, timeout_ms, a.get("user"));
 }
 
 /// 在沙箱里跑命令并打印结果（连接 envd → 执行 → 输出 stdout/stderr/exit）。
-fn runInSandbox(c: *Ctx, sid: []const u8, command: []const u8, cwd: ?[]const u8, envs_json: ?[]const u8, timeout_ms: u64) !void {
+fn runInSandbox(c: *Ctx, sid: []const u8, command: []const u8, cwd: ?[]const u8, envs_json: ?[]const u8, timeout_ms: u64, user: ?[]const u8) !void {
     const buf = try c.arena.alloc(u8, BUF);
     const token = try c.connectToken(sid, buf);
     const envd_base = try c.envdBase(sid);
-    const res = try envd.exec(c.arena, c.client, envd_base, token, null, command, cwd, envs_json, timeout_ms, buf);
+    const res = try envd.exec(c.arena, c.client, envd_base, token, user, command, cwd, envs_json, timeout_ms, buf);
     if (res.stdout.len > 0) try c.out.print("{s}", .{res.stdout});
     if (res.stderr.len > 0) try c.out.print("{s}", .{res.stderr});
     if (res.exit_code != 0) try c.out.print("（exit {d}）\n", .{res.exit_code});
 }
 
-/// POSIX 单引号转义（' → '\''）：把任意代码安全嵌入 shell 命令。
-fn shellQuote(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
-    var cnt: usize = 2;
-    for (s) |ch| {
-        cnt += if (ch == '\'') 4 else 1;
-    }
-    const out = try arena.alloc(u8, cnt);
-    var i: usize = 0;
-    out[i] = '\'';
-    i += 1;
-    for (s) |ch| {
-        if (ch == '\'') {
-            @memcpy(out[i..][0..4], "'\\''");
-            i += 4;
-        } else {
-            out[i] = ch;
-            i += 1;
-        }
-    }
-    out[i] = '\'';
-    i += 1;
-    return out[0..i];
-}
-
+/// exec <sid> <命令...> [--cwd=] [--env=NAME|K=V] [--timeout=秒] [--user=用户]
 fn cmdExec(c: *Ctx, args: []const []const u8) !void {
     const a = try util.parse(c.arena, args);
     if (a.pos.len < 2) return error.MissingArg;
@@ -283,44 +254,65 @@ fn cmdExec(c: *Ctx, args: []const []const u8) !void {
     const command = a.joinFrom(1, " ");
 
     // 环境变量注入：--env=K=V 直接给值；--env=NAME 从本机环境读同名变量
-    // （对齐旧 Go 版 envpush 的用法，避免在命令行里出现明文敏感值）
-    var envs_json: []const u8 = "";
-    {
-        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 32 << 10));
-        var first = true;
-        for (a.flags) |kv| {
-            if (!std.mem.eql(u8, kv[0], "env")) continue;
-            var name: []const u8 = kv[1];
-            var value: []const u8 = "";
-            if (std.mem.indexOfScalar(u8, kv[1], '=')) |i| {
-                name = kv[1][0..i];
-                value = kv[1][i + 1 ..];
-            } else {
-                const z = try c.arena.allocSentinel(u8, kv[1].len, 0);
-                @memcpy(z[0..kv[1].len], kv[1]);
-                const p = std.c.getenv(z.ptr) orelse continue;
-                value = std.mem.span(p);
-            }
-            if (!first) try w.print(",", .{});
-            first = false;
-            try w.print("\"{s}\":\"{s}\"", .{ name, try envd.jsonEscape(c.arena, value) });
-        }
-        envs_json = w.buffered();
-    }
+    // （敏感值不必出现在命令行 / 进程列表里）
+    const envs_json = try util.envsJson(c.arena, a.flags);
 
     const buf = try c.arena.alloc(u8, BUF);
     const token = try c.connectToken(sid, buf);
     const envd_base = try c.envdBase(sid);
 
-    var timeout_ms: u64 = 60_000;
+    // 与 SDK 对齐：缺省不设截止（run(timeout=None) → 不发 Connect-Timeout-Ms）；
+    // 显式 --timeout=秒 才作为 envd 侧硬截止。
+    var timeout_ms: u64 = 0;
     if (a.get("timeout")) |t| {
         if (std.fmt.parseInt(u64, t, 10)) |n| timeout_ms = n * 1000 else |_| {}
     }
 
-    const res = try envd.exec(c.arena, c.client, envd_base, token, null, command, a.get("cwd"), if (envs_json.len > 0) envs_json else null, timeout_ms, buf);
+    const res = try envd.exec(c.arena, c.client, envd_base, token, a.get("user"), command, a.get("cwd"), if (envs_json.len > 0) envs_json else null, timeout_ms, buf);
     if (res.stdout.len > 0) try c.out.print("{s}", .{res.stdout});
     if (res.stderr.len > 0) try c.out.print("{s}", .{res.stderr});
     if (res.exit_code != 0) try c.out.print("（exit {d}）\n", .{res.exit_code});
+}
+
+/// new 的可选扩展字段（对齐 SDK Sandbox.create 的可选参数）：
+///   --env=K=V（可重复）          → envVars（进程注入）
+///   --volume=卷名[:挂载路径]      → volumeMounts（路径缺省 /mnt/<卷名>）
+///   --lifecycle=kill|pause       → lifecycle.onTimeout（pause = 空闲挂起）
+///   --auto-resume                → lifecycle.autoResume=true（配合 pause）
+///   --no-internet                → allow_internet_access=false（e2b 扁平字段，与 SDK 一致）
+///   --distribution-scope=节点,IP  → distributionScope（限定调度节点）
+fn buildCreateExtras(c: *Ctx, a: util.Args) ![]const u8 {
+    var out: []const u8 = "";
+    const envs = try util.envsJson(c.arena, a.flags);
+    if (envs.len > 0) out = try std.fmt.allocPrint(c.arena, "{s},\"envVars\":{{{s}}}", .{ out, envs });
+    if (a.get("volume")) |v| {
+        const ci = std.mem.indexOfScalar(u8, v, ':');
+        const name = if (ci) |i| v[0..i] else v;
+        const path = if (ci) |i| v[i + 1 ..] else try std.fmt.allocPrint(c.arena, "/mnt/{s}", .{name});
+        out = try std.fmt.allocPrint(
+            c.arena,
+            "{s},\"volumeMounts\":[{{\"name\":\"{s}\",\"path\":\"{s}\"}}]",
+            .{ out, try envd.jsonEscape(c.arena, name), try envd.jsonEscape(c.arena, path) },
+        );
+    }
+    if (a.get("lifecycle")) |lc| {
+        const on: []const u8 = if (std.mem.eql(u8, lc, "pause")) "pause" else "kill";
+        var lcbody: []const u8 = try std.fmt.allocPrint(c.arena, "\"onTimeout\":\"{s}\"", .{on});
+        if (a.has("auto-resume")) lcbody = try std.fmt.allocPrint(c.arena, "{s},\"autoResume\":true", .{lcbody});
+        out = try std.fmt.allocPrint(c.arena, "{s},\"lifecycle\":{{{s}}}", .{ out, lcbody });
+    }
+    if (a.has("no-internet")) out = try std.fmt.allocPrint(c.arena, "{s},\"allow_internet_access\":false", .{out});
+    if (a.get("distribution-scope")) |sc| {
+        var list: []const u8 = "";
+        var it = std.mem.tokenizeScalar(u8, sc, ',');
+        var f = true;
+        while (it.next()) |tok| {
+            list = try std.fmt.allocPrint(c.arena, "{s}{s}\"{s}\"", .{ list, if (f) "" else ",", try envd.jsonEscape(c.arena, tok) });
+            f = false;
+        }
+        out = try std.fmt.allocPrint(c.arena, "{s},\"distributionScope\":[{s}]", .{ out, list });
+    }
+    return out;
 }
 
 /// 追加一个 metadata 键值（comma=true 时前面补逗号）

@@ -1,5 +1,65 @@
-//! 参数解析（--k=v / --flag / 位置参数）。
+//! 参数解析（--k=v / --flag / 位置参数）+ 通用小工具。
 const std = @import("std");
+const envd = @import("envd.zig");
+
+pub fn eq(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+/// 打印完立即以指定码退出（flush 先行；process.exit 不跑 defer）。
+pub fn die(out: *std.Io.Writer, code: u8) noreturn {
+    out.flush() catch {};
+    std.process.exit(code);
+}
+
+/// POSIX 单引号转义（' → '\''）：把任意文本安全嵌入 shell 命令。
+pub fn shellQuote(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var cnt: usize = 2;
+    for (s) |ch| {
+        cnt += if (ch == '\'') 4 else 1;
+    }
+    const out = try arena.alloc(u8, cnt);
+    var i: usize = 0;
+    out[i] = '\'';
+    i += 1;
+    for (s) |ch| {
+        if (ch == '\'') {
+            @memcpy(out[i..][0..4], "'\\''");
+            i += 4;
+        } else {
+            out[i] = ch;
+            i += 1;
+        }
+    }
+    out[i] = '\'';
+    i += 1;
+    return out[0..i];
+}
+
+/// 从 --env=K=V / --env=NAME 构建 envs JSON 片段（不含花括号）。
+/// NAME 形式从**本机环境**取值 —— 敏感值不出现在命令行 / 进程列表里。
+pub fn envsJson(arena: std.mem.Allocator, flags: []const [2][]const u8) ![]const u8 {
+    var w = std.Io.Writer.fixed(try arena.alloc(u8, 32 << 10));
+    var first = true;
+    for (flags) |kv| {
+        if (!std.mem.eql(u8, kv[0], "env")) continue;
+        var name: []const u8 = kv[1];
+        var value: []const u8 = "";
+        if (std.mem.indexOfScalar(u8, kv[1], '=')) |i| {
+            name = kv[1][0..i];
+            value = kv[1][i + 1 ..];
+        } else {
+            const z = try arena.allocSentinel(u8, kv[1].len, 0);
+            @memcpy(z[0..kv[1].len], kv[1]);
+            const p = std.c.getenv(z.ptr) orelse continue;
+            value = std.mem.span(p);
+        }
+        if (!first) try w.print(",", .{});
+        first = false;
+        try w.print("\"{s}\":\"{s}\"", .{ name, try envd.jsonEscape(arena, value) });
+    }
+    return w.buffered();
+}
 
 pub const Args = struct {
     pos: []const []const u8 = &.{},

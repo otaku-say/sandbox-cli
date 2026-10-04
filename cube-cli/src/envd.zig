@@ -105,7 +105,6 @@ pub fn exec(
     timeout_ms: u64,
     buf: []u8,
 ) !Result {
-    _ = timeout_ms; // TODO: 写入 Connect-Timeout-Ms 头
     const esc = try jsonEscape(arena, cmd);
     var cwd_json: []const u8 = "";
     if (cwd) |c| {
@@ -123,12 +122,18 @@ pub fn exec(
 
     const url = try std.fmt.allocPrint(arena, "{s}/process.Process/Start", .{envd_base});
 
-    var hs: [4]std.http.Header = undefined;
+    var hs: [5]std.http.Header = undefined;
     var n: usize = 0;
     hs[n] = .{ .name = "Content-Type", .value = connect.content_type };
     n += 1;
     hs[n] = .{ .name = "Connect-Protocol-Version", .value = connect.protocol_version };
     n += 1;
+    // 与 SDK 对齐：timeout <= 0 时不发 Connect-Timeout-Ms（= 无硬截止）；
+    // 给了正数才作为 envd 侧的硬截止（毫秒）。
+    if (timeout_ms > 0) {
+        hs[n] = .{ .name = "Connect-Timeout-Ms", .value = try std.fmt.allocPrint(arena, "{d}", .{timeout_ms}) };
+        n += 1;
+    }
     if (token) |t| {
         hs[n] = .{ .name = "X-Access-Token", .value = t };
         n += 1;
@@ -178,7 +183,7 @@ pub fn exec(
 }
 
 /// 从 JSON 片段里取某个整数字段（粗粒度扫描；字段值只可能是整数）。
-fn extractInt(payload: []const u8, field: []const u8) ?i32 {
+pub fn extractInt(payload: []const u8, field: []const u8) ?i32 {
     var buf: [128]u8 = undefined;
     const pat = std.fmt.bufPrint(&buf, "\"{s}\":", .{field}) catch return null;
     const start = std.mem.indexOf(u8, payload, pat) orelse return null;
@@ -317,4 +322,191 @@ pub fn fsRPC(
     var hs: [4]std.http.Header = undefined;
     const headers = try fileHeaders(arena, "application/json", token, user, &hs);
     return httpc.request(client, .POST, url, headers, json_body, buf);
+}
+
+/// 带 Range 的文件读：GET /files?... + `Range: bytes=<off>-`。
+/// 200 = 服务端忽略 Range（全量，调用方自行切片）；206 = 从 off 起的内容。
+pub fn readFileRange(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    path: []const u8,
+    off: u64,
+    buf: []u8,
+) !httpc.Response {
+    const url = try fileURL(arena, envd_base, path, user);
+    var hs: [5]std.http.Header = undefined;
+    const headers = try fileHeaders(arena, "application/octet-stream", token, user, &hs);
+    var hlen = headers.len;
+    hs[hlen] = .{ .name = "Range", .value = try std.fmt.allocPrint(arena, "bytes={d}-", .{off}) };
+    hlen += 1;
+    return httpc.request(client, .GET, url, hs[0..hlen], null, buf);
+}
+
+// ---------------- 进程控制（异步 / PTY / 信号 / 输入 / 流） ----------------
+//
+// 全部对应 envd 的 process.Process 服务（Connect 协议）：
+//   List / Start / Connect / Update / SendSignal / SendInput
+// 实测结论（2026-10-04，envd 0.5.13）：
+//   - Start 的响应流断开后，进程**继续运行**（可放大输出/输入）→ 异步执行的基础
+//   - Connect 只能连**仍在运行**的 pid，且不重放断开期间产生的输出（envd 无缓冲）
+//   - Connect-Timeout-Ms 头对该流生效：到点服务端发 deadline_exceeded 并关流
+//     （= 客户端侧"有界读"的可靠做法）
+
+/// 通用 unary 调用：POST {base}/<path>（JSON body，Connect unary 语义）。
+pub fn call(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    path: []const u8,
+    json_body: []const u8,
+    buf: []u8,
+) !httpc.Response {
+    const url = try std.fmt.allocPrint(arena, "{s}/{s}", .{ envd_base, path });
+    var hs: [4]std.http.Header = undefined;
+    const headers = try fileHeaders(arena, "application/json", token, user, &hs);
+    return httpc.request(client, .POST, url, headers, json_body, buf);
+}
+
+/// 运行中的进程列表（POST /process.Process/List）。
+pub fn listProcs(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    buf: []u8,
+) !httpc.Response {
+    return call(arena, client, envd_base, token, user, "process.Process/List", "{}", buf);
+}
+
+/// 发信号（signal = "SIGNAL_SIGKILL" / "SIGNAL_SIGTERM"）。
+pub fn sendSignal(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    pid: i64,
+    signal: []const u8,
+    buf: []u8,
+) !httpc.Response {
+    const body = try std.fmt.allocPrint(arena, "{{\"process\":{{\"pid\":{d}}},\"signal\":\"{s}\"}}", .{ pid, signal });
+    return call(arena, client, envd_base, token, user, "process.Process/SendSignal", body, buf);
+}
+
+/// 发输入（kind = "stdin" / "pty"；data 原始字节，base64 后进 JSON）。
+pub fn sendInput(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    pid: i64,
+    kind: []const u8,
+    data: []const u8,
+    buf: []u8,
+) !httpc.Response {
+    const enc = try arena.alloc(u8, std.base64.standard.Encoder.calcSize(data.len));
+    _ = std.base64.standard.Encoder.encode(enc, data);
+    const body = try std.fmt.allocPrint(
+        arena,
+        "{{\"process\":{{\"pid\":{d}}},\"input\":{{\"{s}\":\"{s}\"}}}}",
+        .{ pid, kind, enc },
+    );
+    return call(arena, client, envd_base, token, user, "process.Process/SendInput", body, buf);
+}
+
+/// 调整 PTY 大小（POST /process.Process/Update）。
+pub fn updatePty(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    pid: i64,
+    rows: u64,
+    cols: u64,
+    buf: []u8,
+) !httpc.Response {
+    const body = try std.fmt.allocPrint(
+        arena,
+        "{{\"process\":{{\"pid\":{d}}},\"pty\":{{\"size\":{{\"rows\":{d},\"cols\":{d}}}}}}}",
+        .{ pid, rows, cols },
+    );
+    return call(arena, client, envd_base, token, user, "process.Process/Update", body, buf);
+}
+
+/// 启动并**立即分离**：读到响应体里第一个 `"pid"` 字段就断开连接（进程继续运行）。
+/// 调用方从返回体里自行提取 pid（envd.extractInt(res.body, "pid")）。
+pub fn startDetached(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    payload_json: []const u8,
+    buf: []u8,
+) !httpc.Response {
+    const framed_buf = try arena.alloc(u8, 5 + payload_json.len);
+    const framed = try connect.encode(payload_json, framed_buf);
+    const url = try std.fmt.allocPrint(arena, "{s}/process.Process/Start", .{envd_base});
+
+    var hs: [5]std.http.Header = undefined;
+    var n: usize = 0;
+    hs[n] = .{ .name = "Content-Type", .value = connect.content_type };
+    n += 1;
+    hs[n] = .{ .name = "Connect-Protocol-Version", .value = connect.protocol_version };
+    n += 1;
+    hs[n] = .{ .name = "Connect-Content-Encoding", .value = "identity" };
+    n += 1;
+    if (token) |t| {
+        hs[n] = .{ .name = "X-Access-Token", .value = t };
+        n += 1;
+    }
+    hs[n] = .{ .name = "Authorization", .value = try basicUser(arena, user) };
+    n += 1;
+    return httpc.requestStopAt(client, .POST, url, hs[0..n], framed, buf, "\"pid\"");
+}
+
+/// 有界流式 POST（Connect framing）：带 Connect-Timeout-Ms（秒），
+/// 读到 envd 在超时关流后的 EOF 为止（响应体含 deadline_exceeded 属正常收尾）。
+pub fn streamPost(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    path: []const u8,
+    payload_json: []const u8,
+    timeout_s: u64,
+    buf: []u8,
+) !httpc.Response {
+    const framed_buf = try arena.alloc(u8, 5 + payload_json.len);
+    const framed = try connect.encode(payload_json, framed_buf);
+    const url = try std.fmt.allocPrint(arena, "{s}/{s}", .{ envd_base, path });
+
+    var hs: [6]std.http.Header = undefined;
+    var n: usize = 0;
+    hs[n] = .{ .name = "Content-Type", .value = connect.content_type };
+    n += 1;
+    hs[n] = .{ .name = "Connect-Protocol-Version", .value = connect.protocol_version };
+    n += 1;
+    hs[n] = .{ .name = "Connect-Content-Encoding", .value = "identity" };
+    n += 1;
+    if (timeout_s > 0) {
+        hs[n] = .{ .name = "Connect-Timeout-Ms", .value = try std.fmt.allocPrint(arena, "{d}", .{timeout_s * 1000}) };
+        n += 1;
+    }
+    if (token) |t| {
+        hs[n] = .{ .name = "X-Access-Token", .value = t };
+        n += 1;
+    }
+    hs[n] = .{ .name = "Authorization", .value = try basicUser(arena, user) };
+    n += 1;
+    return httpc.request(client, .POST, url, hs[0..n], framed, buf);
 }

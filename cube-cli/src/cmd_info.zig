@@ -53,6 +53,30 @@ pub fn run(c: *Ctx, argv: []const []const u8) !void {
         return error.MissingArg;
     };
 
+    // --host[=端口]：打印 domain 与 SDK get_host(port) 的虚拟域名（排障对照上游文档）
+    if (a.get("host")) |hv| {
+        const res0 = try fetch(c, sid);
+        const parsed = std.json.parseFromSlice(Detail, c.arena, res0.body, .{ .ignore_unknown_fields = true }) catch {
+            try c.out.print("{s}\n", .{res0.body});
+            return;
+        };
+        const domain: []const u8 = if (parsed.value.domain) |dv| (jsonfmt.valueStr(c.arena, dv) catch "-") else "-";
+        if (std.mem.eql(u8, hv, "true")) {
+            try jsonfmt.field(c.out, "域名", domain);
+            const h = try std.fmt.allocPrint(c.arena, "49983-{s}.{s}", .{ sid, domain });
+            try jsonfmt.field(c.out, "envd 虚拟域名", h);
+            try c.out.print("（上游 SDK get_host 的 `<端口>-<沙箱ID>.<域名>` 形式；\n", .{});
+            try c.out.print("  本部署没有该域名解析，实际数据面走 <CUBESANDBOX_PROXY_URL>/sandbox/<sid>/<端口>/ 路径路由。）\n", .{});
+            return;
+        }
+        const port = std.fmt.parseInt(u16, hv, 10) catch {
+            try c.out.print("--host 取值应为端口或留空：如 --host=49999\n", .{});
+            return error.BadArg;
+        };
+        try c.out.print("{d}-{s}.{s}\n", .{ port, sid, domain });
+        return;
+    }
+
     const wait = a.get("wait");
     var limit_s: u64 = 120;
     if (a.get("timeout")) |t| limit_s = std.fmt.parseInt(u64, t, 10) catch 120;

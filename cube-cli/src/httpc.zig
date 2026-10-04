@@ -62,6 +62,22 @@ pub fn request(
     payload: ?[]const u8,
     buf: []u8,
 ) !Response {
+    return requestStopAt(client, method, url, headers, payload, buf, null);
+}
+
+/// 与 request 相同，但响应体读到**第一次出现 needle** 即停止（不等待 EOF）。
+///
+/// 用于「启动后立即分离」：envd 的 Start 流会一直开到进程结束，
+/// 而我们只想读到首个 `"pid"` 就断开（进程会在沙箱里继续跑）。
+pub fn requestStopAt(
+    client: *std.http.Client,
+    method: Method,
+    url: []const u8,
+    headers: Headers,
+    payload: ?[]const u8,
+    buf: []u8,
+    needle: ?[]const u8,
+) !Response {
     // 低层流程（不用 fetch）：fetch 对 PUT+204 这类"无 body 响应"会在
     // streamRemaining 里等待永远不会到来的 EOF（连接 keep-alive 不关），实测挂死。
     // 这里改用 request → send → receiveHead → 手动读 body，并对 204/304 特判。
@@ -115,6 +131,9 @@ pub fn request(
         }
         zero_streak = 0;
         got += n;
+        if (needle) |nd| {
+            if (std.mem.indexOf(u8, buf[0..got], nd) != null) break;
+        }
     }
     // 兜底：服务器无视"未请求压缩"仍返回压缩体时手动解压
     if (response.head.content_encoding != .identity) {
