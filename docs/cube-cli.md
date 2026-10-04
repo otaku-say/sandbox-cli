@@ -79,12 +79,14 @@ cube-cli new -h            # 同上
   - [`exec`](#exec) —— 在沙箱内执行命令
   - [`code`](#code) —— 用解释器在沙箱内跑一段代码
   - [`ports`](#ports) —— 实测沙箱内实际监听的端口
+  - [`info`](#info) —— 沙箱详情（规格 / 元数据 / 卷挂载 / 截止时间）
 - **生命周期**
   - [`pause`](#pause) —— 暂停沙箱（挂起快照，0 成本）
   - [`resume`](#resume) —— 恢复暂停的沙箱
   - [`timeout`](#timeout) —— 设置空闲回收超时
   - [`refresh`](#refresh) —— 续期：新增一个时间窗
   - [`net`](#net) —— 更新沙箱网络策略
+  - [`connect`](#connect) —— 连接/续期（官方推荐，替代 deprecated 的 resume）
 - **快照 / 卷**
   - [`snap`](#snap) —— 给沙箱打快照
   - [`snap-ls`](#snapls) —— 快照列表
@@ -115,6 +117,8 @@ cube-cli new -h            # 同上
   - [`health`](#health) —— 控制面健康检查
   - [`version`](#version) —— 版本 / 构建信息
   - [`help`](#help) —— 帮助：默认速查表 / all 完整表 / <命令> 详情
+  - [`logs`](#logs) —— 沙箱日志（启动 / 运行；排障首选）
+  - [`raw`](#raw) —— 任意控制面 API 透传（未覆盖端点的兜底）
 
 ## 沙箱
 
@@ -221,6 +225,19 @@ cube-cli ports —— 实测沙箱内实际监听的端口
        真正决定可达性的是绑定地址：0.0.0.0 / :: 可连，127.0.0.1 / ::1 只有沙箱内部能连。
 ```
 
+### info
+
+```text
+cube-cli info —— 沙箱详情（规格 / 元数据 / 卷挂载 / 截止时间）
+分组: 沙箱
+
+用途:  查看单个沙箱完整状态：state、CPU/内存/磁盘、起止时间、metadata、volumeMounts、domain。
+用法:  cube-cli info <sandboxID> [--json] [--wait=<状态>] [--timeout=<秒>]
+参数:  --json 原样输出；--wait= 轮询到指定状态（如 running）；--timeout= 最大等待秒数。
+示例:  cube-cli info 6f1a... --json
+注意:  上游详情不含网络策略（改策略用 net 命令）。
+```
+
 ## 生命周期
 
 ### pause
@@ -288,6 +305,19 @@ cube-cli net —— 更新沙箱网络策略
        --deny=         逗号分隔的出站拒绝域 → denyOut。
 示例:  cube-cli net $SID --no-internet
        cube-cli net $SID --allow=github.com,registry.npmjs.org
+```
+
+### connect
+
+```text
+cube-cli connect —— 连接/续期（官方推荐，替代 deprecated 的 resume）
+分组: 生命周期
+
+用途:  把沙箱唤醒并保证「至少还剩 N 秒」（不会缩短已有的更长截止）。
+用法:  cube-cli connect <sandboxID> [--timeout=<秒>] [--json]
+参数:  --timeout= 剩余时间下限（秒）；缺省用平台默认。
+示例:  cube-cli connect 6f1a... --timeout=3600
+注意:  与 resume 语义不同：resume=「从现在起开 N 秒新窗口」；connect=「保证至少剩 N 秒」。
 ```
 
 ## 快照 / 卷
@@ -645,5 +675,32 @@ cube-cli help —— 帮助：默认速查表 / all 完整表 / <命令> 详情
 示例:  cube-cli help new
        cube-cli tpl-caps --help
 注意:  未知命令会打印「未知命令：xxx」并以非 0 退出。
+```
+
+### logs
+
+```text
+cube-cli logs —— 沙箱日志（启动 / 运行；排障首选）
+分组: 诊断 / 其它
+
+用途:  读沙箱生命周期日志（建沙箱、启动 VM、恢复快照等）。
+用法:  cube-cli logs <sandboxID> [--tail=<N>] [--start=<游标>] [--limit=<N>] [--v2]
+                      [--cursor=<游标>] [--direction=forward|backward] [--level=info|warn|error] [--json]
+参数:  --tail= 只显示最后 N 行；--v2 走结构化日志接口（level/message/fields）。
+示例:  cube-cli logs 6f1a... --tail=50
+```
+
+### raw
+
+```text
+cube-cli raw —— 任意控制面 API 透传（未覆盖端点的兜底）
+分组: 诊断 / 其它
+
+用途:  直接对控制面发任意请求，复用同一套鉴权 / 解压 / 状态码处理；上游新端点无需等 CLI 更新。
+用法:  cube-cli raw <METHOD> <path> [--body=<JSON|@文件|->] [--query=k=v,…] [--header=k:v] [--json]
+参数:  --body= JSON 字符串、@文件名 或 - (stdin)；不带体时 GET/DELETE 无体、POST/PUT 发 {}。
+示例:  cube-cli raw GET /health
+       cube-cli raw POST /sandboxes --body='{"templateID":"tpl-..."}'
+注意:  非 2xx 打印状态码与响应体，并以非 0 退出。
 ```
 
