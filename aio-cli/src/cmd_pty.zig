@@ -110,6 +110,154 @@ fn cmdSend(c: *Ctx, path: []const u8, body: []const u8, method: httpc.Method) !v
     try out(c, res);
 }
 
+// ---------------- pty-ws（WebSocket 附着） ----------------
+
+const ws = @import("ws.zig");
+
+const BaseInfo = struct {
+    host: []const u8,
+    port: u16,
+    path_prefix: []const u8,
+    tls: bool,
+};
+
+/// 解析 SANDBOX_BASE（http(s)://host[:port][/path]）。
+fn parseBase(base: []const u8) !BaseInfo {
+    const sep = std.mem.indexOf(u8, base, "://") orelse return error.BadBase;
+    const scheme = base[0..sep];
+    const rest = base[sep + 3 ..];
+    const tls = std.mem.eql(u8, scheme, "https") or std.mem.eql(u8, scheme, "wss");
+    const slash = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+    const authority = rest[0..slash];
+    const path_prefix = if (slash < rest.len) rest[slash..] else "";
+    var host = authority;
+    var port: u16 = if (tls) 443 else 80;
+    if (std.mem.lastIndexOfScalar(u8, authority, ':')) |ci| {
+        // 注意 IPv6 字面量的 [::1]:8080 形式
+        if (ci > 0 and authority[ci - 1] != ']') {
+            host = authority[0..ci];
+            port = std.fmt.parseInt(u16, authority[ci + 1 ..], 10) catch port;
+        }
+    }
+    // 去掉 IPv6 的方括号
+    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
+        host = host[1 .. host.len - 1];
+    }
+    return .{ .host = host, .port = port, .path_prefix = path_prefix, .tls = tls };
+}
+
+/// pty-ws <会话id> [--send=文本] [--max=条数]
+fn cmdPtyWs(c: *Ctx, anon: bool, a: util.Args) !void {
+    if (!anon) {
+        _ = a.at(0) orelse return error.MissingArg;
+    }
+
+    const info = parseBase(c.base) catch {
+        try c.out.print("无法解析 SANDBOX_BASE: {s}\n", .{c.base});
+        return error.BadBase;
+    };
+    if (info.tls) {
+        try c.out.print("当前 pty-ws 仅支持 ws://（明文）。wss:// 需要 TLS 握手，尚未实现。\n", .{});
+        try c.out.print("可在沙箱内以 SANDBOX_BASE=http://127.0.0.1:<网关端口> 使用。\n", .{});
+        return error.Unsupported;
+    }
+
+    const ws_path = if (anon)
+        try std.fmt.allocPrint(c.arena, "{s}/v2/pty/ws?protocol=json", .{info.path_prefix})
+    else
+        try std.fmt.allocPrint(c.arena, "{s}/v2/pty/sessions/{s}/ws?protocol=json", .{ info.path_prefix, a.at(0).? });
+
+    const host_header = try std.fmt.allocPrint(c.arena, "{s}:{d}", .{ info.host, info.port });
+
+    var conn = ws.dial(c.io, info.host, info.port, ws_path, host_header) catch |e| {
+        try c.out.print("WebSocket 连接失败: {t}\n", .{e});
+        return e;
+    };
+    defer conn.close();
+    std.debug.print("[ws] connected, path={s}\n", .{ws_path});
+
+    // 发送时机：等服务端发出 ready 之后再发，否则会被直接断开
+    var pending_send: ?[]const u8 = a.get("send");
+
+    var max_msgs: usize = 5;
+    if (a.get("max")) |v| {
+        max_msgs = std.fmt.parseInt(usize, v, 10) catch 5;
+    }
+
+    var got: usize = 0;
+    while (got < max_msgs) {
+        const frame = conn.readFrame() catch |e| {
+            if (e == error.ConnectionClosed) break;
+            try c.out.print("读取帧失败: {t}\n", .{e});
+            break;
+        };
+        switch (frame.opcode) {
+            ws.OP_CLOSE => break,
+            ws.OP_PING => try conn.sendFrame(ws.OP_PONG, frame.payload),
+            ws.OP_TEXT => {
+                if (a.has("raw")) {
+                    try c.out.print("[TEXT {d}] {s}\n", .{ frame.payload.len, frame.payload });
+                } else if (std.json.parseFromSlice(std.json.Value, c.arena, frame.payload, .{})) |parsed| {
+                    // 有 data 就输出（自动反转义）；否则输出 [type] 便于观察握手阶段
+                    var printed = false;
+                    if (parsed.value == .object) {
+                        if (parsed.value.object.get("data")) |d| {
+                            if (d == .string) {
+                                try c.out.print("{s}", .{d.string});
+                                printed = true;
+                            }
+                        }
+                        if (!printed) {
+                            if (parsed.value.object.get("type")) |t| {
+                                if (t == .string) {
+                                    try c.out.print("[{s}]\n", .{t.string});
+                                    printed = true;
+                                }
+                            }
+                        }
+                    }
+                    if (!printed) try c.out.print("[{s}]\n", .{frame.payload});
+                } else |_| {
+                    try c.out.print("[{s}]\n", .{frame.payload});
+                }
+                got += 1;
+                if (pending_send != null and std.mem.indexOf(u8, frame.payload, "\"ready\"") != null) {
+                    const line = try std.fmt.allocPrint(c.arena, "{{\"type\":\"input\",\"data\":\"{s}\"}}", .{try util.jsonEscape(c.arena, pending_send.?)});
+                    conn.sendText(line) catch |e| {
+                        try c.out.print("发送失败: {t}\n", .{e});
+                        return e;
+                    };
+                    pending_send = null;
+                }
+            },
+            ws.OP_BINARY => {
+                try c.out.print("{s}", .{frame.payload});
+                got += 1;
+            },
+            else => {},
+        }
+    }
+    try c.out.print("\n", .{});
+}
+
+/// 从 {"type":...,"data":"..."} 里取 data（不依赖完整 JSON 解析）。
+fn extractJSONData(arena: std.mem.Allocator, payload: []const u8) ?[]const u8 {
+    _ = arena;
+    const pat = "\"data\":\"";
+    const start = std.mem.indexOf(u8, payload, pat) orelse return null;
+    const s0 = start + pat.len;
+    var i = s0;
+    while (i < payload.len) : (i += 1) {
+        if (payload[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (payload[i] == '"') break;
+    }
+    if (i >= payload.len) return null;
+    return payload[s0..i];
+}
+
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
@@ -177,7 +325,7 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         return true;
     }
     if (eq(cmd, "pty-ws") or eq(cmd, "pty-ws-anon")) {
-        try c.out.print("pty-ws 需要 WebSocket 客户端，当前版本尚未实现（REST 部分已可用）\n", .{});
+        try cmdPtyWs(c, eq(cmd, "pty-ws-anon"), a);
         return true;
     }
     return false;
