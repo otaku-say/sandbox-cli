@@ -208,7 +208,9 @@ pub fn extractString(arena: std.mem.Allocator, payload: []const u8, field: []con
     const start = std.mem.indexOf(u8, payload, pat) orelse return null;
     const s0 = start + pat.len;
     const end = std.mem.indexOfPos(u8, payload, s0, "\"") orelse return null;
-    return payload[s0..end];
+    // 必须复制：payload 通常指向可复用的网络读缓冲，后续请求会把它覆盖掉，
+    // 直接把切片交出去会在下一次请求后变成垃圾（曾导致网关 URL 出现乱码）。
+    return arena.dupe(u8, payload[s0..end]) catch null;
 }
 
 // ---------------- 文件操作 ----------------
