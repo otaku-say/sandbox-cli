@@ -153,3 +153,15 @@ pub fn jsonEscape(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
 }
 
 pub const BUF = 2 << 20; // 2 MiB
+
+/// 与 jsonEscape 输出等长的上界（用于精确分配写缓冲）。
+pub fn jsonEscapedLen(s: []const u8) usize {
+    var n: usize = 0;
+    for (s) |c| {
+        n += switch (c) {
+            '"', '\\', '\n', '\r', '\t' => 2,
+            else => if (c < 0x20) 6 else 1,
+        };
+    }
+    return n;
+}

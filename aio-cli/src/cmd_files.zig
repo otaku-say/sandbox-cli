@@ -120,10 +120,18 @@ fn cmdWrite(c: *Ctx, a: util.Args) !void {
         data = dir.readFileAlloc(c.io, local, c.arena, .limited(BUF)) catch |e| return e;
     }
 
-    const body = try std.fmt.allocPrint(c.arena, "{{\"path\":\"{s}\",\"content\":\"{s}\"}}", .{
+    // --append / --encoding / --leading-newline / --trailing-newline 透传
+    const cap = util.jsonEscapedLen(remote) + util.jsonEscapedLen(data) + 256;
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, cap));
+    try w.print("{{\"path\":\"{s}\",\"content\":\"{s}\"", .{
         try util.jsonEscape(c.arena, remote), try util.jsonEscape(c.arena, data),
     });
-    try postJSON(c, "/v2/fs/write", body);
+    if (a.has("append")) try w.print(",\"append\":true", .{});
+    if (a.get("encoding")) |v| try w.print(",\"encoding\":\"{s}\"", .{try util.jsonEscape(c.arena, v)});
+    if (a.has("leading-newline")) try w.print(",\"leading_newline\":true", .{});
+    if (a.has("trailing-newline")) try w.print(",\"trailing_newline\":true", .{});
+    try w.print("}}", .{});
+    try postJSON(c, "/v2/fs/write", w.buffered());
 }
 
 fn cmdGet(c: *Ctx, a: util.Args) !void {
@@ -151,7 +159,11 @@ fn cmdMkdir(c: *Ctx, a: util.Args) !void {
 
 fn cmdRm(c: *Ctx, a: util.Args) !void {
     const path = a.at(0) orelse return error.MissingArg;
-    const body = try std.fmt.allocPrint(c.arena, "{{\"path\":\"{s}\"}}", .{try util.jsonEscape(c.arena, path)});
+    // --recursive → recursive=true（否则非空目录服务端 500）
+    const body = if (a.has("recursive"))
+        try std.fmt.allocPrint(c.arena, "{{\"path\":\"{s}\",\"recursive\":true}}", .{try util.jsonEscape(c.arena, path)})
+    else
+        try std.fmt.allocPrint(c.arena, "{{\"path\":\"{s}\"}}", .{try util.jsonEscape(c.arena, path)});
     try postJSON(c, "/v2/fs/delete", body);
 }
 
@@ -167,12 +179,23 @@ fn copyMove(c: *Ctx, cmd: []const u8, a: util.Args) !void {
 
 fn cmdEdit(c: *Ctx, a: util.Args) !void {
     const path = a.at(0) orelse return error.MissingArg;
+    // replace_mode（大写枚举）：多处匹配时必须显式给出才会成功
+    const replace_mode: ?[]const u8 = if (a.has("replace-all"))
+        "ALL"
+    else if (a.has("replace-first"))
+        "FIRST"
+    else if (a.has("replace-last"))
+        "LAST"
+    else
+        null;
     var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
     if (a.get("old")) |old| {
-        try w.print("{{\"path\":\"{s}\",\"command\":\"str_replace\",\"old_str\":\"{s}\",\"new_str\":\"{s}\"}}", .{
+        try w.print("{{\"path\":\"{s}\",\"command\":\"str_replace\",\"old_str\":\"{s}\",\"new_str\":\"{s}\"", .{
             try util.jsonEscape(c.arena, path), try util.jsonEscape(c.arena, old),
             try util.jsonEscape(c.arena, a.get("new") orelse ""),
         });
+        if (replace_mode) |m| try w.print(",\"replace_mode\":\"{s}\"", .{m});
+        try w.print("}}", .{});
     } else if (a.get("insert")) |line| {
         try w.print("{{\"path\":\"{s}\",\"command\":\"insert\",\"insert_line\":{s},\"new_str\":\"{s}\"}}", .{
             try util.jsonEscape(c.arena, path), line, try util.jsonEscape(c.arena, a.get("text") orelse ""),
@@ -390,7 +413,14 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     }
     if (eq(cmd, "ls")) {
         const path = a.at(0) orelse "/";
-        try getJSON(c, try queryPath(c, "/v2/fs/list", path, a.get("user")));
+        // 透传 recursive / show_hidden / max_depth（旧版静默忽略）
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 1024));
+        try w.print("/v2/fs/list?path={s}", .{try urlEncode(c.arena, path)});
+        if (a.get("user")) |u| try w.print("&user={s}", .{try urlEncode(c.arena, u)});
+        if (a.has("recursive")) try w.print("&recursive=true", .{});
+        if (a.has("hidden")) try w.print("&show_hidden=true", .{});
+        if (a.get("depth")) |d| try w.print("&max_depth={s}", .{d});
+        try getJSON(c, w.buffered());
         return true;
     }
     if (eq(cmd, "stat")) {

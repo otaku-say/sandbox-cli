@@ -99,23 +99,28 @@ pub const table = [_]Entry{
         \\用途:  POST /v2/commands（mode 缺省同步）。响应扁平，直接打印 stdout/stderr，
         \\       非 0 退出码时补一行「（exit N）」。
         \\用法:  aio-cli exec <命令> [参数…] [--cwd=<目录>] [--shell=<壳>] [--user=<用户>]
-        \\                      [--session=<会话id>] [--timeout=<毫秒>] [--max-output=<字节>]
+        \\                      [--session=<会话id>] [--env=K=V,K2=V2] [--timeout=<毫秒>]
+        \\                      [--hard-timeout=<秒>] [--args='["a","b"]'] [--max-output=<字节>]
         \\       aio-cli exec --id=<command_id> [--offset=<字节>] [--stderr-offset=<字节>]
+        \\                      [--wait] [--wait-timeout=<秒>]
         \\参数:  <命令> [参数…]  位置参数用空格拼成一条命令（不用自己转义引号）。
         \\       --cwd=        工作目录。
-        \\       --shell=      指定 shell。
+        \\       --shell=      指定 shell（auto|bash|sh|powershell|cmd|none）。
         \\       --user=       以指定用户执行。
         \\       --session=    在已有命令会话里执行。
+        \\       --env=        环境变量，K=V 逗号分隔 → JSON 对象（同名后者覆盖）。
         \\       --timeout=    毫秒；到点返回 status=running，进程还在跑（自己 kill）。
+        \\       --hard-timeout=  秒；到点服务端强杀（返回 timed_out）。
+        \\       --args=       JSON 数组；仅 shell=none 时合法（argv 形式运行）。
         \\       --max-output= 截断输出上限。
         \\       --id=         改成「按 id 回读」模式，不带位置参数。
         \\       --offset= / --stderr-offset=   回读时的字节偏移（增量取输出）。
+        \\       --wait / --wait-timeout=      回读时服务端等待至多 N 秒直到有输出/终态。
         \\示例:  aio-cli exec 'echo hello'
+        \\       aio-cli exec 'echo $A' --env=A=B,C=D
         \\       aio-cli exec 'zig build -Doptimize=ReleaseFast' --cwd=/root/repo --timeout=600000
-        \\       aio-cli exec 'python3 -c "import sys;print(sys.version)"'
         \\       ID=$(aio-cli async 'sleep 60'); aio-cli exec --id=$ID --offset=0
-        \\注意:  源码注释里出现过 `--env=`、`--wait`、`--wait-timeout`，**当前并未实现**。
-        \\       非 2xx 或 success=false → 打印 HTTP <码>: <message>，退出码非 0。
+        \\注意:  非 2xx 或 success=false → 打印 HTTP <码>: <message>，退出码非 0。
         ,
     },
     .{
@@ -124,8 +129,8 @@ pub const table = [_]Entry{
         .brief = "异步派发一条命令，打印 command_id",
         .detail =
         \\用途:  同 exec，但 mode=async，立即返回 command_id。
-        \\用法:  aio-cli async <命令> [参数…] [--cwd=] [--shell=] [--user=] [--session=] [--timeout=] [--max-output=]
-        \\参数:  同 exec（除 --id / --offset 系列）。
+        \\用法:  aio-cli async <命令> [参数…] [--cwd=] [--shell=] [--user=] [--session=] [--env=K=V,K2=V2] [--timeout=] [--hard-timeout=] [--args=] [--max-output=]
+        \\参数:  同 exec（除 --id / --offset / --wait 系列）。
         \\示例:  ID=$(aio-cli async 'pip install pandas && python3 -c "print(1+1)"')
         \\       aio-cli log "$ID" --follow
         \\       aio-cli kill "$ID"
@@ -234,10 +239,14 @@ pub const table = [_]Entry{
         .brief = "把本地文件（或 stdin）写进沙箱",
         .detail =
         \\用途:  POST /v2/fs/write，JSON 传 content（**按文本处理，非二进制安全**）。
-        \\用法:  aio-cli write <本地文件|-> <远端路径>
+        \\用法:  aio-cli write <本地文件|-> <远端路径> [--append] [--encoding=utf-8|base64|raw]
+        \\                      [--leading-newline] [--trailing-newline]
         \\参数:  <本地文件|->  `-` 表示从 stdin 读（上限 4 MiB）。
+        \\       --append       追加到文件末尾而非覆盖。
+        \\       --encoding=    内容编码：utf-8（默认）/ base64 / raw。
+        \\       --leading-newline / --trailing-newline  写入前/后补一个换行。
         \\示例:  aio-cli write ./data.csv /home/gem/data.csv
-        \\       echo hi | aio-cli write - /tmp/hi.txt
+        \\       echo hi | aio-cli write - /tmp/hi.txt --append
         \\注意:  二进制文件请用 `put`（multipart）或 `fs-tree-put`（tar）。
         ,
     },
@@ -286,11 +295,15 @@ pub const table = [_]Entry{
         .group = 2,
         .brief = "列目录",
         .detail =
-        \\用途:  GET /v2/fs/list?path=…。
-        \\用法:  aio-cli ls [远端路径] [--user=<用户>]
+        \\用途:  GET /v2/fs/list?path=…，透传递归/隐藏/深度参数。
+        \\用法:  aio-cli ls [远端路径] [--recursive] [--hidden] [--depth=<层>] [--user=<用户>]
         \\参数:  [远端路径]  缺省为 /。
+        \\       --recursive  递归列出子目录。
+        \\       --hidden     显示隐藏文件（. 开头）。
+        \\       --depth=     最大深度（配合 --recursive）。
         \\示例:  aio-cli ls /home/gem
-        \\注意:  不递归（要树看 `aio-cli tree`）。
+        \\       aio-cli ls /root/repo --recursive --depth=1
+        \\注意:  --depth <= 1 时输出与默认不同（服务端含嵌套条目）。
         ,
     },
     .{
@@ -331,10 +344,11 @@ pub const table = [_]Entry{
         .group = 2,
         .brief = "删除文件/目录",
         .detail =
-        \\用途:  POST /v2/fs/delete。**不递归**。
-        \\用法:  aio-cli rm <远端路径>
+        \\用途:  POST /v2/fs/delete。
+        \\用法:  aio-cli rm <远端路径> [--recursive]
+        \\参数:  --recursive  递归删除非空目录（服务端默认仅删文件/空目录）。
         \\示例:  aio-cli rm /tmp/out
-        \\注意:  非空目录删不掉；整树删除用 `aio-cli exec 'rm -rf ...'`。
+        \\       aio-cli rm /tmp/out --recursive
         ,
     },
     .{
@@ -366,12 +380,17 @@ pub const table = [_]Entry{
         .detail =
         \\用途:  POST /v2/fs/edit。
         \\用法:  aio-cli edit <远端路径> --old=<原串> --new=<新串>
+        \\                      [--replace-all | --replace-first | --replace-last]
         \\       aio-cli edit <远端路径> --insert=<行号> --text=<文本>
         \\参数:  --old= --new=   str_replace 模式；--new 缺省为空串（等于删除该串）。
+        \\       --replace-all   多处匹配全部替换（replace_mode=ALL）。
+        \\       --replace-first 只替换第一处（replace_mode=FIRST）。
+        \\       --replace-last  只替换最后一处（replace_mode=LAST）。
         \\       --insert= --text=  insert 模式，--insert 是行号。
         \\示例:  aio-cli edit /root/app.py --old='v1' --new='v2'
+        \\       aio-cli edit /root/app.py --old='x' --new='y' --replace-all
         \\       aio-cli edit /root/app.py --insert=0 --text='import os'
-        \\注意:  没有 `--replace-all` 选项（源码未实现）。
+        \\注意:  多处匹配而不给 replace_mode 时服务端 400（必须显式三选一）。
         ,
     },
     .{
@@ -792,11 +811,15 @@ pub const table = [_]Entry{
         .group = 6,
         .brief = "长轮询取监听事件",
         .detail =
-        \\用途:  GET /v2/watch/<id>（服务端长轮询）。
-        \\用法:  aio-cli watch-poll <watcher_id>
+        \\用途:  GET /v2/watch/<id>/poll（服务端长轮询）。
+        \\用法:  aio-cli watch-poll <watcher_id> [--cursor=<游标>] [--limit=<条数>] [--timeout=<秒>]
         \\参数:  <watcher_id>  位置参数，必填。
+        \\       --cursor=     从上次返回的 cursor 继续（缺省 0）。
+        \\       --limit=      单次最多返回条数。
+        \\       --timeout=    最长等待秒数（长轮询）。
         \\示例:  aio-cli watch-poll "$W"
-        \\注意:  没有 `--cursor=` / `--timeout=` / `--limit=` 选项（源码未实现）。
+        \\       aio-cli watch-poll "$W" --cursor=5 --limit=10 --timeout=30
+        \\注意:  响应含 cursor/events/overflow；用返回的 cursor 作为下次 --cursor。
         ,
     },
     .{

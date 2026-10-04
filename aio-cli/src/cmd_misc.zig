@@ -115,7 +115,19 @@ fn cmdWatch(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     const id = a.at(0) orelse return error.MissingArg;
     const path = try std.fmt.allocPrint(c.arena, "/v2/watch/{s}", .{id});
     if (std.mem.eql(u8, cmd, "watch-poll")) {
-        try getJ(c, path);
+        // 正确路由是 GET /v2/watch/<id>/poll（/watch/<id> 实测 405）；
+        // 支持 --cursor= / --limit= / --timeout=（服务端长轮询）。
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 512));
+        try w.print("/v2/watch/{s}/poll", .{id});
+        const keys = [_][]const u8{ "cursor", "limit", "timeout" };
+        var first = true;
+        for (keys) |k| {
+            if (a.get(k)) |v| {
+                try w.print("{s}{s}={s}", .{ if (first) "?" else "&", k, v });
+                first = false;
+            }
+        }
+        try getJ(c, w.buffered());
         return;
     }
     if (std.mem.eql(u8, cmd, "watch-rm")) {
