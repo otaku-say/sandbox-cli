@@ -8,6 +8,7 @@ pub const Ctx = struct {
     arena: std.mem.Allocator,
     client: *std.http.Client,
     out: *std.Io.Writer,
+    io: std.Io,
     /// 控制面地址
     api: []const u8,
     /// 控制面 API Key（可空）

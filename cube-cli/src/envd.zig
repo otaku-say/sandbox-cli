@@ -210,3 +210,109 @@ pub fn extractString(arena: std.mem.Allocator, payload: []const u8, field: []con
     const end = std.mem.indexOfPos(u8, payload, s0, "\"") orelse return null;
     return payload[s0..end];
 }
+
+// ---------------- 文件操作 ----------------
+
+/// URL 编码（保留 `/`，便于路径拼接）。
+pub fn urlEncode(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    const hex = "0123456789ABCDEF";
+    var n: usize = 0;
+    for (s) |ch| {
+        const safe = (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or
+            (ch >= '0' and ch <= '9') or ch == '-' or ch == '_' or ch == '.' or ch == '~' or ch == '/';
+        n += if (safe) 1 else 3;
+    }
+    const out = try arena.alloc(u8, n);
+    var i: usize = 0;
+    for (s) |ch| {
+        const safe = (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or
+            (ch >= '0' and ch <= '9') or ch == '-' or ch == '_' or ch == '.' or ch == '~' or ch == '/';
+        if (safe) {
+            out[i] = ch;
+            i += 1;
+        } else {
+            out[i] = '%';
+            out[i + 1] = hex[ch >> 4];
+            out[i + 2] = hex[ch & 0x0F];
+            i += 3;
+        }
+    }
+    return out[0..i];
+}
+
+/// 文件操作通用头：Content-Type + Connect 版本 + 可选鉴权 / Basic 用户作用域。
+fn fileHeaders(arena: std.mem.Allocator, ctype: []const u8, token: ?[]const u8, user: ?[]const u8, out: []std.http.Header) !httpc.Headers {
+    var n: usize = 0;
+    out[n] = .{ .name = "Content-Type", .value = ctype };
+    n += 1;
+    out[n] = .{ .name = "Connect-Protocol-Version", .value = connect.protocol_version };
+    n += 1;
+    if (token) |t| {
+        out[n] = .{ .name = "X-Access-Token", .value = t };
+        n += 1;
+    }
+    if (user) |u| {
+        out[n] = .{ .name = "Authorization", .value = try basicUser(arena, u) };
+        n += 1;
+    }
+    return out[0..n];
+}
+
+fn fileURL(arena: std.mem.Allocator, envd_base: []const u8, path: []const u8, user: ?[]const u8) ![]const u8 {
+    if (user) |u| {
+        return std.fmt.allocPrint(arena, "{s}/files?path={s}&username={s}", .{
+            envd_base, try urlEncode(arena, path), try urlEncode(arena, u),
+        });
+    }
+    return std.fmt.allocPrint(arena, "{s}/files?path={s}", .{ envd_base, try urlEncode(arena, path) });
+}
+
+/// 读文件（GET /files）。
+pub fn readFile(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    path: []const u8,
+    buf: []u8,
+) !httpc.Response {
+    const url = try fileURL(arena, envd_base, path, user);
+    var hs: [4]std.http.Header = undefined;
+    const headers = try fileHeaders(arena, "application/octet-stream", token, user, &hs);
+    return httpc.get(client, url, headers, buf);
+}
+
+/// 写文件（POST /files，原始 octet-stream）。
+pub fn writeFile(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    path: []const u8,
+    data: []const u8,
+    buf: []u8,
+) !httpc.Response {
+    const url = try fileURL(arena, envd_base, path, user);
+    var hs: [4]std.http.Header = undefined;
+    const headers = try fileHeaders(arena, "application/octet-stream", token, user, &hs);
+    return httpc.request(client, .POST, url, headers, data, buf);
+}
+
+/// 文件系统 RPC（POST /filesystem.Filesystem/<Method>，请求体是纯 JSON）。
+pub fn fsRPC(
+    arena: std.mem.Allocator,
+    client: *std.http.Client,
+    envd_base: []const u8,
+    token: ?[]const u8,
+    user: ?[]const u8,
+    method: []const u8,
+    json_body: []const u8,
+    buf: []u8,
+) !httpc.Response {
+    const url = try std.fmt.allocPrint(arena, "{s}/filesystem.Filesystem/{s}", .{ envd_base, method });
+    var hs: [4]std.http.Header = undefined;
+    const headers = try fileHeaders(arena, "application/json", token, user, &hs);
+    return httpc.request(client, .POST, url, headers, json_body, buf);
+}
