@@ -51,35 +51,110 @@ Zig 静态链接 musl，无 runtime、无 GC，启动接近 C 程序。
 
 **所有部署相关取值一律通过环境变量传入，仓库内不含任何主机名、IP 或凭据。**
 
-| 变量 | 说明 |
-|---|---|
-| `CUBESANDBOX_API_URL` | 控制面地址 |
-| `CUBESANDBOX_API_KEY` | 控制面 API Key（部署未启用鉴权时可省略） |
-| `CUBESANDBOX_PROXY_URL` | 数据面网关地址（拼沙箱访问 URL 用） |
+**cube-cli（控制面）**
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `CUBESANDBOX_API_URL` | 是 | 控制面地址 |
+| `CUBESANDBOX_API_KEY` | 否 | 控制面 API Key（部署未启用鉴权时可省略） |
+| `CUBESANDBOX_PROXY_URL` | exec / 文件 / ports 必填 | 数据面网关地址（拼沙箱访问 URL 用） |
+| `CUBESANDBOX_AGENT_NAME` | 否 | `new` 写入 `metadata.agent` 的默认名字 |
 
 仅支持 CUBESANDBOX_* 新命名（旧名不再兼容）。
 
+**aio-cli（数据面）**
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `SANDBOX_BASE` | 是（`help` 除外） | aiod 网关地址。两种写法：`https://<网关>/sandbox/<sandboxID>/8080`（远程遥控）或 `http://127.0.0.1:8080`（沙箱内自测）。末尾多余的 `/` 会自动去掉。 |
+| `SANDBOX_KEY` | 否 | 鉴权 Key（非空时附 `Authorization: Bearer` + `X-API-Key`） |
+
+`SANDBOX_BASE` 的值就是 `cube-cli new` 打印的 `[sandbox] AIO 网关:` 那行。
+
 ## 构建
 
-需要 Zig **0.17.0**。
+需要 Zig **0.17.0**。两个工具的构建方式一致，产物名按目标架构区分：
 
 ```bash
-cd cube-cli
-zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
-# 产物：zig-out/bin/cube-cli
+# 本机架构
+cd cube-cli && zig build -Doptimize=ReleaseFast        # → zig-out/bin/cube-cli
+cd aio-cli  && zig build -Doptimize=ReleaseFast        # → zig-out/bin/aio-cli
+
+# 交叉编译到 ARM（iSH / 手机 / aarch64 机器）
+cd cube-cli && zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
+cd aio-cli  && zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
 ```
 
-目标三元组：`aarch64-linux-musl`（ARM 设备 / iSH）、`x86_64-linux-musl`（x86 服务器）。
+| 目标三元组 | 产物文件名 | 用在哪 |
+|---|---|---|
+| `aarch64-linux-musl` | `cube-cli-aarch64-linux-musl` / `aio-cli-aarch64-linux-musl` | iSH（iOS）、ARM 服务器 |
+| `x86_64-linux-musl` | `cube-cli-x86_64-linux-musl` / `aio-cli-x86_64-linux-musl` | x86 服务器、桌面 Linux |
 
-## 用法
+两种架构都必须能编过；ReleaseFast + strip 后每个约 1.1–1.3 MB 静态单文件。
+
+## 命令速查：先看 `help`
+
+**`help` 就是权威命令面。** 命令表在 `cube-cli/src/help.zig` 与 `aio-cli/src/help.zig`，
+`docs/*.md` 由 `scripts/gen-docs.py` 从**编译产物**自动生成——**文档随代码走**，
+改了命令先改 `help.zig`，再跑一次生成脚本，README 不再重复维护命令清单。
 
 ```bash
-cube-cli version           # 版本
-cube-cli health            # 控制面健康检查
-cube-cli tpl-ls            # 列出模板
+# 三个工具都是同一种入口
+<cli> help              # 分组速查（常用命令，≤60 行）
+<cli> help all          # 完整命令表，一条一行
+<cli> help <命令>       # 单命令详解：用途 / 用法 / 参数 / 示例 / 注意
+<cli> <命令> --help     # 同上，且**只打印不执行**
+<cli> <命令> -h         # 同上
+```
+
+`cube-cli` 常用：
+
+```bash
+cube-cli version                 # 版本 / 仓库地址 / 构建信息
+cube-cli health                  # 控制面健康检查
+cube-cli tpl-ls                  # 列出模板
+cube-cli new --need=code         # 建沙箱（默认就是 aio-code 镜像）
+cube-cli ls                      # 列出沙箱
+cube-cli exec <sandboxID> 'zig version' --timeout=300
+cube-cli snap <sandboxID> --name=before-refactor
+```
+
+`aio-cli` 常用（先 `export SANDBOX_BASE=...`）：
+
+```bash
+aio-cli health
+aio-cli exec 'zig version' --timeout=600000
+aio-cli write ./a.md /home/gem/a.md && aio-cli cat /home/gem/a.md
+aio-cli br-go https://example.com && aio-cli br-shot shot.png
+ID=$(aio-cli async 'sleep 60'); aio-cli log "$ID" --follow; aio-cli kill "$ID"
+```
+
+### 逐条文档
+
+- [`docs/cube-cli.md`](docs/cube-cli.md) —— cube-cli 全部 37 条命令
+- [`docs/aio-cli.md`](docs/aio-cli.md) —— aio-cli 全部 76 条命令
+
+重新生成：
+
+```bash
+cd cube-cli && zig build -Doptimize=ReleaseFast && cd ../aio-cli && zig build -Doptimize=ReleaseFast
+cd .. && python3 scripts/gen-docs.py --cube cube-cli/zig-out/bin/cube-cli --aio aio-cli/zig-out/bin/aio-cli
+```
+
+### 冒烟测试
+
+```bash
+sh tests/help_smoke.sh          # 帮助体系 + new --help 不建沙箱，可重复执行
 ```
 
 ## 注意
+
+- **flag 一律 `--key=value` 等号写法**（`--need=code`）；布尔开关直接写 `--flag`。
+- **未知命令**会打印「未知命令：xxx」并以**非 0** 退出码结束。
+- `--help` / `-h` / `help <命令>` 三种写法等价，且**绝不触发真实操作**——
+  `cube-cli new --help` 只打印帮助、不会真的建沙箱（`tests/help_smoke.sh` 里有回归验证）。
+- 文档里标了「源码未实现」的选项确实没有接线（历史上旧文档写过的 `--env=` / `--limit=` /
+  `--ref=` 等在当前实现里不存在），别照抄。
 
 Zig 0.17 的标准库与旧版本差异很大（`std.io` → `std.Io`、`std.http.Client` 需注入 `io`、
 `main` 签名改为接收 `std.process.Init`）。本仓库代码按 0.17 编写，**不要**参照网上基于 0.11–0.14 的示例。

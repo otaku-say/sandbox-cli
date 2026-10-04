@@ -16,6 +16,7 @@ const cmd_ports = @import("cmd_ports.zig");
 const cmd_files = @import("cmd_files.zig");
 const cmd_lifecycle = @import("cmd_lifecycle.zig");
 const cmd_image = @import("cmd_image.zig");
+const help = @import("help.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -41,7 +42,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     const argv_raw = init.args.vector;
     if (argv_raw.len < 2) {
-        try usage(out);
+        try help.printTop(out);
         return;
     }
     const argv = try arena.alloc([]const u8, argv_raw.len);
@@ -50,12 +51,37 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const args = argv[2..];
 
     if (eq(cmd, "version") or eq(cmd, "--version")) {
-        try out.print("cube-cli (zig) {s}\n", .{cfg.version});
+        try help.printVersion(out);
         return;
     }
-    if (eq(cmd, "help") or eq(cmd, "--help")) {
-        try usage(out);
-        return;
+
+    // ---- 帮助体系（必须在任何 dispatch 之前拦截：--help 绝不触发真实操作）----
+    if (help.isHelpCmd(cmd)) {
+        if (args.len == 0) {
+            try help.printTop(out);
+            return;
+        }
+        const topic = args[0];
+        if (eq(topic, "all")) {
+            try help.printAll(out);
+            return;
+        }
+        if (help.find(topic)) |e| {
+            try help.printOne(out, e);
+            return;
+        }
+        try help.printUnknown(out, topic);
+        exitWith(out, 1);
+    }
+    // `<cmd> --help` / `<cmd> -h` / `<cmd> help`
+    for (args) |a| {
+        if (!help.isHelpArg(a)) continue;
+        if (help.find(cmd)) |e| {
+            try help.printOne(out, e);
+            return;
+        }
+        try help.printUnknown(out, cmd);
+        exitWith(out, 1);
     }
 
     var ctx: Ctx = .{
@@ -80,39 +106,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (try cmd_lifecycle.dispatch(&ctx, cmd, args)) return;
     if (try cmd_image.dispatch(&ctx, cmd, args)) return;
 
-    try out.print("未知命令: {s}\n\n", .{cmd});
-    try usage(out);
+    try help.printUnknown(out, cmd);
+    exitWith(out, 1);
 }
 
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-fn usage(out: *std.Io.Writer) !void {
-    try out.print(
-        \\cube-cli (zig) {s} —— CubeSandbox 控制面 CLI
-        \\
-        \\沙箱:
-        \\  cube-cli new [--need=code|browser|desktop] [--timeout=秒] [--note=名称] [--agent=谁] [--task=做什么]
-        \\              默认 --need=code（aio-code 沙箱，自带 Zig 工具链）
-        \\  cube-cli ls                    列出沙箱（ID/模板/状态/备注）
-        \\  cube-cli rm <sandboxID>        销毁沙箱
-        \\  cube-cli exec <sandboxID> <命令...> [--cwd=]
-        \\
-        \\模板:
-        \\  cube-cli tpl-ls [--json]       模板列表（含网关端口推断）
-        \\  cube-cli tpl-caps [--json]     模板画像：能力 + 端口 + 网关
-        \\  cube-cli tpl-pick --need=browser,desktop
-        \\
-        \\其它:
-        \\  cube-cli health | version | help
-        \\
-    , .{cfg.version});
-    try out.print(
-        \\环境变量（仓库内不含任何部署信息）:
-        \\  CUBESANDBOX_API_URL / CUBESANDBOX_API_KEY / CUBESANDBOX_PROXY_URL
-        \\
-    , .{});
+/// 打印完立即以指定码退出（process.exit 不跑 defer，所以先 flush）。
+fn exitWith(out: *std.Io.Writer, code: u8) noreturn {
+    out.flush() catch {};
+    std.process.exit(code);
 }
 
 // ---------------- 命令 ----------------
