@@ -13,6 +13,7 @@ const cmd_files = @import("cmd_files.zig");
 const cmd_pty = @import("cmd_pty.zig");
 const cmd_browser = @import("cmd_browser.zig");
 const cmd_misc = @import("cmd_misc.zig");
+const cmd_cmp = @import("cmd_cmp.zig");
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
@@ -77,6 +78,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (try cmd_pty.dispatch(&ctx, cmd, rest)) return;
     if (try cmd_browser.dispatch(&ctx, cmd, rest)) return;
     if (try cmd_misc.dispatch(&ctx, cmd, rest)) return;
+    if (try cmd_cmp.dispatch(&ctx, cmd, rest)) return;
 
     try out.print("未知命令: {s}\n\n", .{cmd});
     try usage(out);

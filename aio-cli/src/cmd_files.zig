@@ -199,6 +199,141 @@ fn cmdSearch(c: *Ctx, a: util.Args) !void {
     try getJSON(c, q);
 }
 
+/// put <本地文件|-> <远端路径>：multipart 上传到服务端 /tmp 再移动到目标（二进制安全）。
+fn cmdPut(c: *Ctx, a: util.Args) !void {
+    const local = a.at(0) orelse return error.MissingArg;
+    const remote = a.at(1) orelse return error.MissingArg;
+
+    var data: []const u8 = undefined;
+    if (std.mem.eql(u8, local, "-")) {
+        const buf = try c.arena.alloc(u8, 64 << 20);
+        var rbuf: [8192]u8 = undefined;
+        var r = std.Io.File.stdin().reader(c.io, &rbuf);
+        var total: usize = 0;
+        while (total < buf.len) {
+            const n = r.interface.readSliceShort(buf[total..]) catch break;
+            if (n == 0) break;
+            total += n;
+        }
+        data = buf[0..total];
+    } else {
+        data = std.Io.Dir.cwd().readFileAlloc(c.io, local, c.arena, .limited(64 << 20)) catch |e| {
+            try c.out.print("读取本地文件 {s} 失败: {t}\n", .{ local, e });
+            return e;
+        };
+    }
+
+    var fname: []const u8 = local;
+    if (std.mem.lastIndexOfScalar(u8, local, '/')) |i| fname = local[i + 1 ..];
+    if (std.mem.eql(u8, fname, "-")) fname = "stdin.bin";
+
+    const boundary = "ZigAioCliBoundary7f3a9c";
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, data.len + 4096));
+    try w.print("--{s}\r\n", .{boundary});
+    try w.print("Content-Disposition: form-data; name=\"file\"; filename=\"{s}\"\r\n", .{fname});
+    try w.print("Content-Type: application/octet-stream\r\n\r\n", .{});
+    try w.writeAll(data);
+    try w.print("\r\n--{s}--\r\n", .{boundary});
+
+    const ct = try std.fmt.allocPrint(c.arena, "multipart/form-data; boundary={s}", .{boundary});
+    const hs = try c.arena.alloc(std.http.Header, 3);
+    var hn: usize = 0;
+    hs[hn] = .{ .name = "Accept", .value = "application/json" };
+    hn += 1;
+    hs[hn] = .{ .name = "Content-Type", .value = ct };
+    hn += 1;
+    if (c.key) |k| {
+        hs[hn] = .{ .name = "X-API-KEY", .value = k };
+        hn += 1;
+    }
+
+    const buf = try c.arena.alloc(u8, BUF);
+    const res = try httpc.request(c.client, .POST, try c.url("/v2/fs/upload"), hs[0..hn], w.buffered(), buf);
+    if (!res.ok()) return fail(c, res);
+    const tmp = blk: {
+        const parsed = std.json.parseFromSlice(std.json.Value, c.arena, res.body, .{}) catch break :blk null;
+        break :blk dataString(parsed.value, "file_path");
+    } orelse {
+        try c.out.print("上传响应缺少 file_path: {s}\n", .{res.body});
+        return error.NoFilePath;
+    };
+
+    const mv = if (a.has("overwrite"))
+        try std.fmt.allocPrint(c.arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\",\"overwrite\":true}}", .{
+            try util.jsonEscape(c.arena, tmp), try util.jsonEscape(c.arena, remote),
+        })
+    else
+        try std.fmt.allocPrint(c.arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\"}}", .{
+            try util.jsonEscape(c.arena, tmp), try util.jsonEscape(c.arena, remote),
+        });
+    const buf2 = try c.arena.alloc(u8, BUF);
+    const mres = try httpc.postJson(c.client, try c.url("/v2/fs/move"), try jsonAuth(c), mv, buf2);
+    if (!mres.ok()) return fail(c, mres);
+    try c.out.print("已上传 {s} -> {s}（{d} 字节）\n", .{ local, remote, data.len });
+}
+
+/// fs-tree-put <本地 tar|-> <远端目录>：PUT /v2/fs/tree（只收未压缩 tar；gzip 自动先解压）。
+fn cmdFsTreePut(c: *Ctx, a: util.Args) !void {
+    const src = a.at(0) orelse return error.MissingArg;
+    const remote = a.at(1) orelse return error.MissingArg;
+
+    var raw: []const u8 = undefined;
+    if (std.mem.eql(u8, src, "-")) {
+        const buf = try c.arena.alloc(u8, 256 << 20);
+        var rbuf: [8192]u8 = undefined;
+        var r = std.Io.File.stdin().reader(c.io, &rbuf);
+        var total: usize = 0;
+        while (total < buf.len) {
+            const n = r.interface.readSliceShort(buf[total..]) catch break;
+            if (n == 0) break;
+            total += n;
+        }
+        raw = buf[0..total];
+    } else {
+        raw = std.Io.Dir.cwd().readFileAlloc(c.io, src, c.arena, .limited(256 << 20)) catch |e| {
+            try c.out.print("读取本地文件 {s} 失败: {t}\n", .{ src, e });
+            return e;
+        };
+    }
+
+    var payload = raw;
+    if (raw.len >= 2 and raw[0] == 0x1f and raw[1] == 0x8b) {
+        payload = gunzip(c.arena, raw) catch |e| {
+            try c.out.print("gzip 解压失败（{t}）\n提示：可先在本地解压：gunzip -c x.tgz | aio-cli fs-tree-put - <远端目录>\n", .{e});
+            return e;
+        };
+        std.debug.print("提示: 输入为 gzip，已在本地解压为原始 tar 再上传\n", .{});
+    }
+
+    const q = try queryPath(c, "/v2/fs/tree", remote, a.get("user"));
+    const hs = try c.arena.alloc(std.http.Header, 3);
+    var hn: usize = 0;
+    hs[hn] = .{ .name = "Accept", .value = "application/json" };
+    hn += 1;
+    hs[hn] = .{ .name = "Content-Type", .value = "application/x-tar" };
+    hn += 1;
+    if (c.key) |k| {
+        hs[hn] = .{ .name = "X-API-KEY", .value = k };
+        hn += 1;
+    }
+
+    const buf = try c.arena.alloc(u8, BUF);
+    const res = try httpc.request(c.client, .PUT, try c.url(q), hs[0..hn], payload, buf);
+    if (!res.ok()) return fail(c, res);
+    if (a.has("json")) {
+        try c.out.print("{s}\n", .{res.body});
+        return;
+    }
+    try c.out.print("整树已上传 -> {s}\n{s}\n", .{ remote, res.body });
+}
+
+fn gunzip(arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    var in: std.Io.Reader = .fixed(raw);
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var d = std.compress.flate.Decompress.init(&in, .gzip, &window);
+    return try d.reader.readAllocShort(arena, 128 << 20);
+}
+
 // ---------------- 鉴权 ----------------
 
 fn auth(c: *Ctx) !httpc.Headers {
@@ -243,6 +378,14 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     }
     if (eq(cmd, "get")) {
         try cmdGet(c, a);
+        return true;
+    }
+    if (eq(cmd, "put")) {
+        try cmdPut(c, a);
+        return true;
+    }
+    if (eq(cmd, "fs-tree-put")) {
+        try cmdFsTreePut(c, a);
         return true;
     }
     if (eq(cmd, "ls")) {

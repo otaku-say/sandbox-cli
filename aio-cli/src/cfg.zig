@@ -3,7 +3,7 @@
 //! 约定：本仓库不出现任何真实主机名 / IP / 凭据，全部由环境变量注入。
 const std = @import("std");
 
-pub const version = "0.1.0";
+pub const version = "0.2.0";
 
 pub fn getenv(name: [*:0]const u8) ?[]const u8 {
     const p = std.c.getenv(name) orelse return null;

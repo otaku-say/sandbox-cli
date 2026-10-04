@@ -169,6 +169,55 @@ fn cmdVol(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     }
 }
 
+/// net <sid> [--no-internet] [--allow=域1,域2] [--deny=域1,域2]
+/// 更新沙箱网络策略（PUT /sandboxes/<id>/network，204 即成功）。
+fn cmdNet(c: *Ctx, a: util.Args) !void {
+    const sid = try sidOf(a);
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 32 << 10));
+    try w.writeAll("{");
+    var first = true;
+    if (a.has("no-internet")) {
+        try w.writeAll("\"allowInternetAccess\":false");
+        first = false;
+    }
+    if (a.has("internet")) {
+        if (!first) try w.writeAll(",");
+        first = false;
+        try w.writeAll("\"allowInternetAccess\":true");
+    }
+    if (a.get("allow")) |v| {
+        if (!first) try w.writeAll(",");
+        first = false;
+        try w.writeAll("\"allowOut\":[");
+        var it = std.mem.tokenizeScalar(u8, v, ',');
+        var f2 = true;
+        while (it.next()) |tok| {
+            if (!f2) try w.writeAll(",");
+            f2 = false;
+            try w.print("\"{s}\"", .{try envd.jsonEscape(c.arena, tok)});
+        }
+        try w.writeAll("]");
+    }
+    if (a.get("deny")) |v| {
+        if (!first) try w.writeAll(",");
+        first = false;
+        try w.writeAll("\"denyOut\":[");
+        var it = std.mem.tokenizeScalar(u8, v, ',');
+        var f2 = true;
+        while (it.next()) |tok| {
+            if (!f2) try w.writeAll(",");
+            f2 = false;
+            try w.print("\"{s}\"", .{try envd.jsonEscape(c.arena, tok)});
+        }
+        try w.writeAll("]");
+    }
+    try w.writeAll("}");
+    const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}/network", .{sid});
+    const buf = try c.arena.alloc(u8, 2 << 20);
+    _ = try c.control(.PUT, path, w.buffered(), buf);
+    try c.out.print("network updated（{s}）\n", .{sid});
+}
+
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
@@ -189,6 +238,10 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     }
     if (eq(cmd, "refresh")) {
         try cmdRefresh(c, a);
+        return true;
+    }
+    if (eq(cmd, "net")) {
+        try cmdNet(c, a);
         return true;
     }
     if (eq(cmd, "snap")) {

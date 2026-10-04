@@ -12,6 +12,7 @@ const std = @import("std");
 const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const httpc = @import("httpc.zig");
+const sse = @import("sse.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 8 << 20;
@@ -125,6 +126,48 @@ fn cmdWatch(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     }
 }
 
+const WatchCtx = struct { c: *Ctx, count: usize, max: usize, json: bool };
+
+fn onWatchEvent(t: *WatchCtx, ev: sse.Event) anyerror!bool {
+    t.count += 1;
+    if (t.json) {
+        try t.c.out.print("{s}\n", .{ev.data});
+    } else {
+        try t.c.out.print("[#{d}] event={s}", .{ t.count, if (ev.name.len > 0) ev.name else "message" });
+        if (ev.id.len > 0) try t.c.out.print(" id={s}", .{ev.id});
+        try t.c.out.print("\n  {s}\n", .{ev.data});
+    }
+    if (t.max > 0 and t.count >= t.max) return false;
+    return true;
+}
+
+/// watch-events <watcher_id> [--max=N] [--json]：SSE 事件流（GET /v2/watch/<id>/events）。
+fn cmdWatchEvents(c: *Ctx, a: util.Args) !void {
+    const id = a.at(0) orelse return error.MissingArg;
+    var max: usize = 0;
+    if (a.get("max")) |m| max = std.fmt.parseInt(usize, m, 10) catch 0;
+    const json = a.has("json");
+    const path = try std.fmt.allocPrint(c.arena, "/v2/watch/{s}/events", .{id});
+
+    const hs = try c.arena.alloc(std.http.Header, 2);
+    var n: usize = 0;
+    hs[n] = .{ .name = "Accept", .value = "text/event-stream" };
+    n += 1;
+    if (c.key) |k| {
+        hs[n] = .{ .name = "X-API-KEY", .value = k };
+        n += 1;
+    }
+    if (!json) std.debug.print("已订阅 watcher {s} 的事件流（Ctrl-C 退出；--max=N 限数）\n", .{id});
+    var wctx = WatchCtx{ .c = c, .count = 0, .max = max, .json = json };
+    sse.subscribe(c.client, c.arena, .{ .url = try c.url(path), .headers = hs[0..n] }, &wctx, onWatchEvent) catch |e| switch (e) {
+        error.HttpStatus => return,
+        else => {
+            std.debug.print("事件流错误: {t}\n", .{e});
+            return e;
+        },
+    };
+}
+
 /// mcp <initialize|tools/list|tools/call|ping> [--params=JSON]
 fn cmdMcp(c: *Ctx, a: util.Args) !void {
     const method = a.at(0) orelse return error.MissingArg;
@@ -151,6 +194,10 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     }
     if (eq(cmd, "watch") or eq(cmd, "watch-poll") or eq(cmd, "watch-rm")) {
         try cmdWatch(c, cmd, a);
+        return true;
+    }
+    if (eq(cmd, "watch-events")) {
+        try cmdWatchEvents(c, a);
         return true;
     }
     if (eq(cmd, "mcp")) {

@@ -161,15 +161,94 @@ fn tplLs(c: *Ctx, a: util.Args) !void {
     }
 }
 
+/// tpl-caps [<模板ID>] [--probe] [--prune] [--json]
+/// 静态推断（亚秒级）或真机探测（--probe，建临时沙箱打真实端点）模板能力画像。
 fn tplCaps(c: *Ctx, a: util.Args) !void {
-    _ = a;
     const buf = try c.arena.alloc(u8, 2 << 20);
     const list = try fetchTemplates(c);
-    try c.out.print("{s:<34} {s:<28} {s:<6} {s}\n", .{ "模板ID", "能力", "网关", "端口" });
+
+    // --prune：清理平台已不存在的模板条目
+    if (a.has("prune")) {
+        if (loadCache(c)) |cv0| {
+            var stale = try c.arena.alloc([]const u8, 128);
+            var ns: usize = 0;
+            var it = cv0.object.iterator();
+            while (it.next()) |e| {
+                const k = e.key_ptr.*;
+                var found = false;
+                for (list) |t| {
+                    if (std.mem.eql(u8, t.templateID, k)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found and ns < stale.len) {
+                    stale[ns] = k;
+                    ns += 1;
+                }
+            }
+            var cv_mut = cv0;
+            for (stale[0..ns]) |k| {
+                _ = cv_mut.object.swapRemove(k);
+            }
+            try saveCache(c, &cv_mut.object);
+            std.debug.print("[caps] 已清理 {d} 个条目（当前模板 {d} 个）\n", .{ ns, list.len });
+        } else {
+            std.debug.print("[caps] 无缓存文件，无需清理\n", .{});
+        }
+    }
+
+    // --probe：真机探测（无参=探所有无缓存的 READY；给 ID=只探它）
+    if (a.has("probe")) {
+        var cv_opt = loadCache(c);
+        if (cv_opt == null) {
+            const p = try std.json.parseFromSlice(std.json.Value, c.arena, "{}", .{});
+            cv_opt = p.value;
+        }
+        var cv = cv_opt.?;
+        const target = a.at(0);
+        for (list) |t| {
+            if (!std.mem.eql(u8, t.status, "READY")) continue;
+            if (target) |tid| {
+                if (!std.mem.eql(u8, t.templateID, tid) and std.mem.indexOf(u8, t.templateID, tid) == null) continue;
+            } else if (cv.object.get(t.templateID) != null) {
+                continue; // 已有缓存：跳过（要重探请显式给模板 ID）
+            }
+            std.debug.print("[caps] 探测 {s} …\n", .{t.templateID});
+            const pr = probeTemplate(c, t.templateID) catch |e| {
+                std.debug.print("[caps] {s} 探测失败: {t}\n", .{ t.templateID, e });
+                continue;
+            };
+            var ent = std.Io.Writer.fixed(try c.arena.alloc(u8, 8 << 10));
+            try ent.print("{{\"caps\":\"{s}\",\"gw\":{d},\"templateAt\":\"{s}\"}}", .{
+                try envd.jsonEscape(c.arena, pr.caps), pr.gw, try envd.jsonEscape(c.arena, t.createdAt),
+            });
+            const ev = (try std.json.parseFromSlice(std.json.Value, c.arena, ent.buffered(), .{})).value;
+            try cv.object.put(c.arena, t.templateID, ev);
+            try saveCache(c, &cv.object);
+            std.debug.print("[caps] {s} → {s}（网关 {d}）\n", .{ t.templateID, pr.caps, pr.gw });
+        }
+    }
+
+    // 表格（静态推断 + 探测缓存合并）
+    const cache_v = loadCache(c);
+    try c.out.print("{s:<34} {s:<28} {s:<6} {s:<7} {s}\n", .{ "模板ID", "能力", "网关", "来源", "端口" });
     for (list) |t| {
         const ports = try detailPorts(c, t.templateID, buf);
-        const caps = try capsFromStatic(c.arena, ports, t.imageInfo);
-        const gw = guessGateway(ports, t.imageInfo);
+        var caps = try capsFromStatic(c.arena, ports, t.imageInfo);
+        var gw = guessGateway(ports, t.imageInfo);
+        var source: []const u8 = "static";
+        if (cache_v) |cv| {
+            if (cv.object.get(t.templateID)) |ent| {
+                if (ceStr(ent, "templateAt")) |ta| {
+                    if (std.mem.eql(u8, ta, t.createdAt)) {
+                        if (ceStr(ent, "caps")) |cc| caps = cc;
+                        if (ceNum(ent, "gw")) |g2| gw = g2;
+                        source = "probe";
+                    }
+                }
+            }
+        }
         var gwbuf: [8]u8 = undefined;
         const gws: []const u8 = if (gw > 0) try std.fmt.bufPrint(&gwbuf, "{d}", .{gw}) else "-";
 
@@ -183,25 +262,47 @@ fn tplCaps(c: *Ctx, a: util.Args) !void {
             const s = try std.fmt.bufPrint(pbuf[pn..], "{d}", .{p});
             pn += s.len;
         }
-        try c.out.print("{s:<34} {s:<28} {s:<6} {s}\n", .{ t.templateID, caps, gws, pbuf[0..pn] });
+        try c.out.print("{s:<34} {s:<28} {s:<6} {s:<7} {s}\n", .{ t.templateID, caps, gws, source, pbuf[0..pn] });
     }
 }
+
 
 /// 选型结果：模板 ID + 能力 + 网关端口
 pub const Picked = struct { id: []const u8, caps: []const u8, gw: u16 };
 
 /// 按能力挑模板（能力覆盖 + 更薄者优先）—— tpl-pick 与 new --need 共用。
+/// 探测缓存（templateAt 匹配）优先于静态推断。
 pub fn pickByNeed(c: *Ctx, need: []const u8) !Picked {
     const buf = try c.arena.alloc(u8, 2 << 20);
     const list = try fetchTemplates(c);
+    const cache_v = loadCache(c);
     var best: ?Picked = null;
     for (list) |t| {
         if (!std.mem.eql(u8, t.status, "READY")) continue;
-        const ports = try detailPorts(c, t.templateID, buf);
-        const caps = try capsFromStatic(c.arena, ports, t.imageInfo);
+        var caps: []const u8 = undefined;
+        var gw: u16 = 0;
+        var from_cache = false;
+        if (cache_v) |cv| {
+            if (cv.object.get(t.templateID)) |ent| {
+                if (ceStr(ent, "templateAt")) |ta| {
+                    if (std.mem.eql(u8, ta, t.createdAt)) {
+                        if (ceStr(ent, "caps")) |cc| {
+                            caps = cc;
+                            gw = ceNum(ent, "gw") orelse 0;
+                            from_cache = true;
+                        }
+                    }
+                }
+            }
+        }
+        if (!from_cache) {
+            const ports = try detailPorts(c, t.templateID, buf);
+            caps = try capsFromStatic(c.arena, ports, t.imageInfo);
+            gw = guessGateway(ports, t.imageInfo);
+        }
         if (!covers(caps, need)) continue;
         if (best == null or caps.len < best.?.caps.len) {
-            best = .{ .id = t.templateID, .caps = caps, .gw = guessGateway(ports, t.imageInfo) };
+            best = .{ .id = t.templateID, .caps = caps, .gw = gw };
         }
     }
     return best orelse error.NotFound;
@@ -215,6 +316,204 @@ fn tplPick(c: *Ctx, a: util.Args) !void {
     };
     try c.out.print("{s}\n", .{p.id});
     try c.out.print("need={s}  能力={s}  网关={d}\n", .{ need, p.caps, p.gw });
+}
+
+// ---------------- caps 缓存（~/.cube-cli-caps.json） ----------------
+
+fn cachePath(c: *Ctx) ![]const u8 {
+    const home_z = std.c.getenv("HOME") orelse return "";
+    return std.fmt.allocPrint(c.arena, "{s}/.cube-cli-caps.json", .{std.mem.span(home_z)});
+}
+
+/// 读取缓存；null = 无文件 / 解析失败（返回的 Value 借用 arena）。
+fn loadCache(c: *Ctx) ?std.json.Value {
+    const p = cachePath(c) catch return null;
+    if (p.len == 0) return null;
+    const data = std.Io.Dir.cwd().readFileAlloc(c.io, p, c.arena, .limited(4 << 20)) catch return null;
+    const parsed = std.json.parseFromSlice(std.json.Value, c.arena, data, .{}) catch return null;
+    if (parsed.value != .object) return null;
+    return parsed.value;
+}
+
+fn saveCache(c: *Ctx, obj: *std.json.ObjectMap) !void {
+    const p = try cachePath(c);
+    if (p.len == 0) return;
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 256 << 10));
+    try w.writeAll("{");
+    var first = true;
+    var it = obj.iterator();
+    while (it.next()) |e| {
+        if (!first) try w.writeAll(",");
+        first = false;
+        try w.print("\"{s}\":", .{try envd.jsonEscape(c.arena, e.key_ptr.*)});
+        try std.json.Stringify.value(e.value_ptr.*, .{}, &w);
+    }
+    try w.writeAll("}");
+    const f = try std.Io.Dir.cwd().createFile(c.io, p, .{});
+    defer f.close(c.io);
+    var fbuf: [4096]u8 = undefined;
+    var fw = f.writer(c.io, &fbuf);
+    try fw.interface.writeAll(w.buffered());
+    try fw.interface.flush();
+}
+
+fn ceStr(v: std.json.Value, key: []const u8) ?[]const u8 {
+    if (v != .object) return null;
+    const f = v.object.get(key) orelse return null;
+    if (f != .string) return null;
+    return f.string;
+}
+
+fn ceNum(v: std.json.Value, key: []const u8) ?u16 {
+    if (v != .object) return null;
+    const f = v.object.get(key) orelse return null;
+    if (f != .integer) return null;
+    return std.math.cast(u16, f.integer) orelse null;
+}
+
+// ---------------- 真机探测 ----------------
+
+fn sleepMs(c: *Ctx, ms: i96) void {
+    std.Io.sleep(c.io, .{ .nanoseconds = ms * std.time.ns_per_ms }, .awake) catch {};
+}
+
+/// 在探测沙箱里跑命令，返回 stdout（失败给空串）。
+fn execProbe(c: *Ctx, sid: []const u8, cmd: []const u8) []const u8 {
+    const buf = c.arena.alloc(u8, 1 << 20) catch return "";
+    const token = c.connectToken(sid, buf) catch return "";
+    const envd_base = c.envdBase(sid) catch return "";
+    const res = envd.exec(c.arena, c.client, envd_base, token, null, cmd, null, null, 30_000, buf) catch return "";
+    return res.stdout;
+}
+
+const ProbeOut = struct { caps: []const u8, gw: u16 };
+
+/// 真机探测一个模板：建临时沙箱 → 打真实端点 → 销毁。
+fn probeTemplate(c: *Ctx, tpl_id: []const u8) !ProbeOut {
+    const body = try std.fmt.allocPrint(c.arena, "{{\"templateID\":\"{s}\",\"timeout\":300}}", .{tpl_id});
+    const buf = try c.arena.alloc(u8, 2 << 20);
+    const res = try c.control(.POST, "/sandboxes", body, buf);
+    const sid = envd.extractString(c.arena, res.body, "sandboxID") orelse {
+        try c.out.print("探测沙箱创建失败: {s}\n", .{res.body});
+        return error.NoSandbox;
+    };
+    const kill_path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}", .{sid});
+    defer {
+        _ = c.control(.DELETE, kill_path, null, buf) catch {};
+    }
+    std.debug.print("[caps] 探测沙箱 {s} 已创建（envd 预热中…）\n", .{sid});
+
+    // 等 envd 204（最多 60s）
+    var envd_ok = false;
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        const out = execProbe(c, sid, "curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:49983/health");
+        if (std.mem.indexOf(u8, out, "204") != null) {
+            envd_ok = true;
+            break;
+        }
+        sleepMs(c, 2000);
+    }
+    if (!envd_ok) {
+        std.debug.print("[caps] envd 60s 未就绪，放弃\n", .{});
+        return error.Timeout;
+    }
+
+    // 画像：aiod / chrome / X11
+    const prof_cmd =
+        "if command -v aiod >/dev/null 2>&1 || ls /usr/local/bin/aiod /opt/*/aiod >/dev/null 2>&1; then echo AIOD=1; else echo AIOD=0; fi\n" ++
+        "if command -v google-chrome >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1; then echo CHROME=1; else echo CHROME=0; fi\n" ++
+        "if command -v Xvfb >/dev/null 2>&1 || command -v Xvnc >/dev/null 2>&1 || command -v x11vnc >/dev/null 2>&1 || command -v xfce4-session >/dev/null 2>&1 || command -v startxfce4 >/dev/null 2>&1; then echo X11=1; else echo X11=0; fi";
+    const pout = execProbe(c, sid, prof_cmd);
+    const has_aiod = std.mem.indexOf(u8, pout, "AIOD=1") != null;
+    const has_chrome = std.mem.indexOf(u8, pout, "CHROME=1") != null;
+    const has_x11 = std.mem.indexOf(u8, pout, "X11=1") != null;
+
+    var caps: []const u8 = CAP_BASE;
+    if (!has_aiod) return .{ .caps = caps, .gw = 0 };
+
+    // 网关端口（8080 / 18091）
+    var gw: u16 = 0;
+    var j: usize = 0;
+    while (j < 20) : (j += 1) {
+        const out = execProbe(c, sid, "for p in 8080 18091; do c=$(curl -s -o /dev/null -w \"%{http_code}\" --max-time 2 http://127.0.0.1:$p/health); [ \"$c\" = \"200\" ] && { echo \"GW=$p\"; break; }; done");
+        if (std.mem.indexOf(u8, out, "GW=")) |gi| {
+            const s2 = out[gi + 3 ..];
+            var e: usize = 0;
+            while (e < s2.len and s2[e] >= '0' and s2[e] <= '9') : (e += 1) {}
+            gw = std.fmt.parseInt(u16, s2[0..e], 10) catch 0;
+        }
+        if (gw > 0) break;
+        sleepMs(c, 3000);
+    }
+    if (gw == 0) {
+        std.debug.print("[caps] 有 aiod 但网关未就绪，按基线记\n", .{});
+        return .{ .caps = caps, .gw = 0 };
+    }
+
+    // browser（/v2/browser/screenshot == 200）
+    if (has_chrome) {
+        var launched = false;
+        var k: usize = 0;
+        while (k < 18) : (k += 1) {
+            const code = execProbe(c, sid, try std.fmt.allocPrint(c.arena, "curl -s -o /dev/null -w \"%{{http_code}}\" --max-time 5 http://127.0.0.1:{d}/v2/browser/screenshot", .{gw}));
+            if (std.mem.indexOf(u8, code, "200") != null) {
+                caps = try std.fmt.allocPrint(c.arena, "{s},browser", .{caps});
+                break;
+            }
+            if (!launched and k >= 4) {
+                launched = true;
+                _ = execProbe(c, sid, "test -x /opt/gem/browser-launch.sh && /opt/gem/browser-launch.sh >/dev/null 2>&1; echo done");
+            }
+            sleepMs(c, 5000);
+        }
+    }
+    // desktop（/v2/computer/info == 200）
+    if (has_x11) {
+        var k: usize = 0;
+        while (k < 9) : (k += 1) {
+            const code = execProbe(c, sid, try std.fmt.allocPrint(c.arena, "curl -s -o /dev/null -w \"%{{http_code}}\" --max-time 5 http://127.0.0.1:{d}/v2/computer/info", .{gw}));
+            if (std.mem.indexOf(u8, code, "200") != null) {
+                caps = try std.fmt.allocPrint(c.arena, "{s},desktop", .{caps});
+                break;
+            }
+            sleepMs(c, 5000);
+        }
+    }
+    return .{ .caps = caps, .gw = gw };
+}
+
+/// tpl-info <模板ID> [--json]：模板详情摘要（--json 原样输出）。
+fn tplInfo(c: *Ctx, a: util.Args) !void {
+    const id = a.at(0) orelse return error.MissingArg;
+    const buf = try c.arena.alloc(u8, 2 << 20);
+    const path = try std.fmt.allocPrint(c.arena, "/templates/{s}", .{id});
+    const res = try c.control(.GET, path, null, buf);
+    if (a.has("json")) {
+        try c.out.print("{s}\n", .{res.body});
+        return;
+    }
+    const st = envd.extractString(c.arena, res.body, "status") orelse "?";
+    const img = envd.extractString(c.arena, res.body, "imageInfo") orelse "?";
+    const created = envd.extractString(c.arena, res.body, "createdAt") orelse "?";
+    const ports = envd.extractString(c.arena, res.body, "com.exposed_ports") orelse "-";
+    try c.out.print("模板ID   : {s}\n", .{id});
+    try c.out.print("状态     : {s}\n", .{st});
+    try c.out.print("镜像     : {s}\n", .{img});
+    try c.out.print("创建时间 : {s}\n", .{created});
+    try c.out.print("暴露端口 : {s}\n", .{ports});
+    const ps = parsePorts(c.arena, ports) catch &.{};
+    try c.out.print("网关推断 : {d}\n", .{guessGateway(ps, img)});
+}
+
+/// tpl-logs <模板ID> <buildID>：模板构建日志。
+fn tplLogs(c: *Ctx, a: util.Args) !void {
+    const tid = a.at(0) orelse return error.MissingArg;
+    const bid = a.at(1) orelse return error.MissingArg;
+    const buf = try c.arena.alloc(u8, 8 << 20);
+    const path = try std.fmt.allocPrint(c.arena, "/templates/{s}/builds/{s}/logs", .{ tid, bid });
+    const res = try c.control(.GET, path, null, buf);
+    try c.out.print("{s}\n", .{res.body});
 }
 
 fn eq(a: []const u8, b: []const u8) bool {
@@ -233,6 +532,14 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     }
     if (eq(cmd, "tpl-pick")) {
         try tplPick(c, a);
+        return true;
+    }
+    if (eq(cmd, "tpl-info")) {
+        try tplInfo(c, a);
+        return true;
+    }
+    if (eq(cmd, "tpl-logs")) {
+        try tplLogs(c, a);
         return true;
     }
     return false;

@@ -16,6 +16,10 @@ pub const Ctx = struct {
 
     /// 控制面请求（GET/DELETE 无 body；POST/PUT 自动带 JSON Content-Type）。
     pub fn control(self: *Ctx, method: httpc.Method, path: []const u8, payload: ?[]const u8, buf: []u8) !httpc.Response {
+        if (self.api.len == 0) {
+            try self.out.print("错误：缺少环境变量 CUBESANDBOX_API_URL\n", .{});
+            return error.MissingConfig;
+        }
         const url = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ trimSlash(self.api), path });
         var hs: [3]std.http.Header = undefined;
         var n: usize = 0;

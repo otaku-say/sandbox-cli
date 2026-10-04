@@ -14,6 +14,7 @@ const cmd_template = @import("cmd_template.zig");
 const cmd_ports = @import("cmd_ports.zig");
 const cmd_files = @import("cmd_files.zig");
 const cmd_lifecycle = @import("cmd_lifecycle.zig");
+const cmd_image = @import("cmd_image.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -61,10 +62,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .client = &client,
         .out = out,
         .io = io,
-        .api = cfg.apiURL() orelse {
-            try out.print("错误：缺少环境变量 CUBESANDBOX_API_URL\n", .{});
-            return error.MissingConfig;
-        },
+        // 允许为空：tpl-from-image 等离线命令不需要控制面；实际使用时报错（见 ctx.control）
+        .api = cfg.apiURL() orelse "",
         .key = cfg.apiKey(),
     };
 
@@ -73,10 +72,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (eq(cmd, "ls")) return cmdList(&ctx);
     if (eq(cmd, "rm")) return cmdRemove(&ctx, args);
     if (eq(cmd, "exec")) return cmdExec(&ctx, args);
+    if (eq(cmd, "code")) return cmdCode(&ctx, args);
     if (try cmd_template.dispatch(&ctx, cmd, args)) return;
     if (try cmd_ports.dispatch(&ctx, cmd, args)) return;
     if (try cmd_files.dispatch(&ctx, cmd, args)) return;
     if (try cmd_lifecycle.dispatch(&ctx, cmd, args)) return;
+    if (try cmd_image.dispatch(&ctx, cmd, args)) return;
 
     try out.print("未知命令: {s}\n\n", .{cmd});
     try usage(out);
@@ -193,6 +194,92 @@ fn cmdRemove(c: *Ctx, args: []const []const u8) !void {
     const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}", .{sid});
     _ = try c.control(.DELETE, path, null, buf);
     try c.out.print("killed {s}\n", .{sid});
+}
+
+/// code <sid> <代码...> [--lang=python|js|bash] [--timeout=秒] [--env=...]
+/// 用解释器直接跑代码（等价 exec python3 -c ...；不依赖 Jupyter 内核，任何镜像可用）。
+fn cmdCode(c: *Ctx, args: []const []const u8) !void {
+    const a = try util.parse(c.arena, args);
+    if (a.pos.len < 2) return error.MissingArg;
+    const sid = a.pos[0];
+    const src = a.joinFrom(1, " ");
+    const lang = a.get("lang") orelse "python";
+    const q = try shellQuote(c.arena, src);
+    const cmd = if (eq(lang, "python") or eq(lang, "python3"))
+        try std.fmt.allocPrint(c.arena, "python3 -c {s}", .{q})
+    else if (eq(lang, "js") or eq(lang, "javascript") or eq(lang, "node") or eq(lang, "nodejs"))
+        try std.fmt.allocPrint(c.arena, "node -e {s}", .{q})
+    else if (eq(lang, "bash") or eq(lang, "sh") or eq(lang, "shell"))
+        try std.fmt.allocPrint(c.arena, "bash -c {s}", .{q})
+    else {
+        try c.out.print("不支持的语言: {s}（可选 python / js / bash）\n", .{lang});
+        return error.BadLang;
+    };
+    const envs_json = try envsFromFlags(c, a);
+    var timeout_ms: u64 = 120_000;
+    if (a.get("timeout")) |t| {
+        if (std.fmt.parseInt(u64, t, 10)) |n| timeout_ms = n * 1000 else |_| {}
+    }
+    try runInSandbox(c, sid, cmd, null, if (envs_json.len > 0) envs_json else null, timeout_ms);
+}
+
+/// 从 --env=K=V / --env=NAME 构建 envs JSON（值从本机环境读时不出现在命令行）。
+fn envsFromFlags(c: *Ctx, a: util.Args) ![]const u8 {
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 32 << 10));
+    var first = true;
+    for (a.flags) |kv| {
+        if (!std.mem.eql(u8, kv[0], "env")) continue;
+        var name: []const u8 = kv[1];
+        var value: []const u8 = "";
+        if (std.mem.indexOfScalar(u8, kv[1], '=')) |i| {
+            name = kv[1][0..i];
+            value = kv[1][i + 1 ..];
+        } else {
+            const z = try c.arena.allocSentinel(u8, kv[1].len, 0);
+            @memcpy(z[0..kv[1].len], kv[1]);
+            const p = std.c.getenv(z.ptr) orelse continue;
+            value = std.mem.span(p);
+        }
+        if (!first) try w.print(",", .{});
+        first = false;
+        try w.print("\"{s}\":\"{s}\"", .{ name, try envd.jsonEscape(c.arena, value) });
+    }
+    return w.buffered();
+}
+
+/// 在沙箱里跑命令并打印结果（连接 envd → 执行 → 输出 stdout/stderr/exit）。
+fn runInSandbox(c: *Ctx, sid: []const u8, command: []const u8, cwd: ?[]const u8, envs_json: ?[]const u8, timeout_ms: u64) !void {
+    const buf = try c.arena.alloc(u8, BUF);
+    const token = try c.connectToken(sid, buf);
+    const envd_base = try c.envdBase(sid);
+    const res = try envd.exec(c.arena, c.client, envd_base, token, null, command, cwd, envs_json, timeout_ms, buf);
+    if (res.stdout.len > 0) try c.out.print("{s}", .{res.stdout});
+    if (res.stderr.len > 0) try c.out.print("{s}", .{res.stderr});
+    if (res.exit_code != 0) try c.out.print("（exit {d}）\n", .{res.exit_code});
+}
+
+/// POSIX 单引号转义（' → '\''）：把任意代码安全嵌入 shell 命令。
+fn shellQuote(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var cnt: usize = 2;
+    for (s) |ch| {
+        cnt += if (ch == '\'') 4 else 1;
+    }
+    const out = try arena.alloc(u8, cnt);
+    var i: usize = 0;
+    out[i] = '\'';
+    i += 1;
+    for (s) |ch| {
+        if (ch == '\'') {
+            @memcpy(out[i..][0..4], "'\\''");
+            i += 4;
+        } else {
+            out[i] = ch;
+            i += 1;
+        }
+    }
+    out[i] = '\'';
+    i += 1;
+    return out[0..i];
 }
 
 fn cmdExec(c: *Ctx, args: []const []const u8) !void {
