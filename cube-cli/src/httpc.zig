@@ -9,11 +9,50 @@ pub const Method = std.http.Method;
 pub const Response = struct {
     status: u16,
     body: []const u8,
+    /// 响应头副本（响应体读完、连接复用之后依然有效；见 captureHeaders）。
+    headers: Headers = &.{},
 
     pub fn ok(self: Response) bool {
         return self.status >= 200 and self.status < 300;
     }
+
+    /// 取响应头（大小写不敏感）。
+    pub fn header(self: Response, name: []const u8) ?[]const u8 {
+        for (self.headers) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
+        }
+        return null;
+    }
+
+    /// 取响应头并按整数解析（如 Retry-After）。
+    pub fn headerInt(self: Response, name: []const u8) ?i64 {
+        const v = self.header(name) orelse return null;
+        return std.fmt.parseInt(i64, std.mem.trim(u8, v, " \t"), 10) catch null;
+    }
 };
+
+/// 复制并解析响应头。
+///
+/// std.http 的 Response.Head 不保留解析后的头表，只留原始字节 `.bytes`；
+/// 而这些字节指向连接读缓冲，一旦开始读 body 就被覆盖 —— 所以必须先复制一份。
+/// 复制品由 smp_allocator 持有，进程生命周期内一直有效（CLI 是短进程，不回收）。
+fn captureHeaders(head_bytes: []const u8) Headers {
+    const gpa = std.heap.smp_allocator;
+    const copy = gpa.dupe(u8, head_bytes) catch return &.{};
+    var list: std.ArrayList(std.http.Header) = .empty;
+    defer list.deinit(gpa);
+    var it = std.mem.splitSequence(u8, copy, "\r\n");
+    _ = it.first(); // 状态行
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        const i = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..i], " \t");
+        const value = std.mem.trim(u8, line[i + 1 ..], " \t");
+        if (name.len == 0) continue;
+        list.append(gpa, .{ .name = name, .value = value }) catch return &.{};
+    }
+    return list.toOwnedSlice(gpa) catch &.{};
+}
 
 pub fn request(
     client: *std.http.Client,
@@ -46,9 +85,11 @@ pub fn request(
 
     var response = try req.receiveHead(&.{});
     const status: u16 = @intFromEnum(response.head.status);
-    // 204/304 无 body：直接返回（绝不读流）
-    if (status == 204 or status == 304) {
-        return .{ .status = status, .body = "" };
+    // 先抓住响应头（body 一旦开始读，head.bytes 指向的缓冲就被覆盖）
+    const resp_headers = captureHeaders(response.head.bytes);
+    // 204/304/HEAD 无 body：直接返回（绝不读流）
+    if (status == 204 or status == 304 or method == .HEAD) {
+        return .{ .status = status, .body = "", .headers = resp_headers };
     }
 
     var tb: [4096]u8 = undefined;
@@ -78,9 +119,9 @@ pub fn request(
     // 兜底：服务器无视"未请求压缩"仍返回压缩体时手动解压
     if (response.head.content_encoding != .identity) {
         const dec = try decompressBody(buf[0..got], response.head.content_encoding);
-        return .{ .status = status, .body = dec };
+        return .{ .status = status, .body = dec, .headers = resp_headers };
     }
-    return .{ .status = status, .body = buf[0..got] };
+    return .{ .status = status, .body = buf[0..got], .headers = resp_headers };
 }
 
 /// 兜底解压（gzip/zlib）：服务器无视"未请求压缩"仍返回压缩体时使用。
@@ -120,6 +161,11 @@ pub fn del(client: *std.http.Client, url: []const u8, headers: Headers, buf: []u
 /// POST JSON：headers 需含 Content-Type: application/json
 pub fn postJson(client: *std.http.Client, url: []const u8, headers: Headers, json: []const u8, buf: []u8) !Response {
     return request(client, .POST, url, headers, json, buf);
+}
+
+/// PATCH JSON（上游 PATCH /templates/{id} 直接 501，这里只保证协议层能发出去）。
+pub fn patchJson(client: *std.http.Client, url: []const u8, headers: Headers, json: []const u8, buf: []u8) !Response {
+    return request(client, .PATCH, url, headers, json, buf);
 }
 
 pub const json_ct = std.http.Header{ .name = "Content-Type", .value = "application/json" };

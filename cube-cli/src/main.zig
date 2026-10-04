@@ -17,6 +17,13 @@ const cmd_files = @import("cmd_files.zig");
 const cmd_lifecycle = @import("cmd_lifecycle.zig");
 const cmd_image = @import("cmd_image.zig");
 const help = @import("help.zig");
+const cmd_health = @import("cmd_health.zig");
+const cmd_ls = @import("cmd_ls.zig");
+const cmd_rm = @import("cmd_rm.zig");
+const cmd_info = @import("cmd_info.zig");
+const cmd_logs = @import("cmd_logs.zig");
+const cmd_raw = @import("cmd_raw.zig");
+const cmd_connect = @import("cmd_connect.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -94,10 +101,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .key = cfg.apiKey(),
     };
 
-    if (eq(cmd, "health")) return cmdHealth(&ctx);
+    if (eq(cmd, "health")) return cmd_health.run(&ctx, args);
     if (eq(cmd, "new")) return cmdNew(&ctx, args);
-    if (eq(cmd, "ls")) return cmdList(&ctx);
-    if (eq(cmd, "rm")) return cmdRemove(&ctx, args);
+    if (eq(cmd, "ls")) return cmd_ls.run(&ctx, args);
+    if (eq(cmd, "rm")) return cmd_rm.run(&ctx, args);
     if (eq(cmd, "exec")) return cmdExec(&ctx, args);
     if (eq(cmd, "code")) return cmdCode(&ctx, args);
     if (try cmd_template.dispatch(&ctx, cmd, args)) return;
@@ -105,6 +112,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (try cmd_files.dispatch(&ctx, cmd, args)) return;
     if (try cmd_lifecycle.dispatch(&ctx, cmd, args)) return;
     if (try cmd_image.dispatch(&ctx, cmd, args)) return;
+    // ---- P0 新增（用法说明见各命令文件的 pub const help）----
+    if (try cmd_info.dispatch(&ctx, cmd, args)) return;
+    if (try cmd_logs.dispatch(&ctx, cmd, args)) return;
+    if (try cmd_raw.dispatch(&ctx, cmd, args)) return;
+    if (try cmd_connect.dispatch(&ctx, cmd, args)) return;
 
     try help.printUnknown(out, cmd);
     exitWith(out, 1);
@@ -120,13 +132,8 @@ fn exitWith(out: *std.Io.Writer, code: u8) noreturn {
     std.process.exit(code);
 }
 
-// ---------------- 命令 ----------------
-
-fn cmdHealth(c: *Ctx) !void {
-    const buf = try c.arena.alloc(u8, BUF);
-    const res = try c.control(.GET, "/health", null, buf);
-    try c.out.print("{s}\n", .{res.body});
-}
+// health / ls / rm 已移到独立模块（cmd_health.zig / cmd_ls.zig / cmd_rm.zig），
+// 用法说明见各自的 `pub const help`；main.zig 这里只保留 dispatch 接线。
 
 fn cmdNew(c: *Ctx, args: []const []const u8) !void {
     const a = try util.parse(c.arena, args);
@@ -174,32 +181,6 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
     const base = try std.fmt.allocPrint(c.arena, "{s}/sandbox/{s}", .{ ctxmod.trimSlash(proxy), sid });
     std.debug.print("[sandbox] AIO 网关: {s}/{d}/   ← aio-cli 的 SANDBOX_BASE\n", .{ base, gw });
     std.debug.print("[sandbox] envd    : {s}/49983/\n", .{base});
-}
-
-fn cmdList(c: *Ctx) !void {
-    const buf = try c.arena.alloc(u8, BUF);
-    const res = try c.control(.GET, "/sandboxes", null, buf);
-    const Meta = struct { agent: ?[]const u8 = null, task: ?[]const u8 = null, note: ?[]const u8 = null };
-    const Field = struct { sandboxID: []const u8 = "", templateID: []const u8 = "", state: []const u8 = "", metadata: ?Meta = null };
-    const parsed = std.json.parseFromSlice([]Field, c.arena, res.body, .{ .ignore_unknown_fields = true }) catch {
-        try c.out.print("{s}\n", .{res.body});
-        return;
-    };
-    try c.out.print("{s:<34} {s:<34} {s:<10} {s}\n", .{ "沙箱ID", "模板", "状态", "备注" });
-    for (parsed.value) |s| {
-        const meta = s.metadata orelse Meta{};
-        const label = meta.note orelse meta.agent orelse "-";
-        try c.out.print("{s:<34} {s:<34} {s:<10} {s}\n", .{ s.sandboxID, s.templateID, s.state, label });
-    }
-}
-
-fn cmdRemove(c: *Ctx, args: []const []const u8) !void {
-    if (args.len == 0) return error.MissingArg;
-    const sid = args[0];
-    const buf = try c.arena.alloc(u8, BUF);
-    const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}", .{sid});
-    _ = try c.control(.DELETE, path, null, buf);
-    try c.out.print("killed {s}\n", .{sid});
 }
 
 /// code <sid> <代码...> [--lang=python|js|bash] [--timeout=秒] [--env=...]
