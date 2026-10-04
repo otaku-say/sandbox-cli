@@ -30,6 +30,12 @@ pub const Args = struct {
     pub fn at(self: Args, i: usize) ?[]const u8 {
         return if (i < self.pos.len) self.pos[i] else null;
     }
+
+    /// 位置参数从 from 开始拼成一条串。
+    pub fn joinFrom(self: Args, from: usize, sep: []const u8) []const u8 {
+        if (self.pos.len <= from) return "";
+        return std.mem.join(std.heap.smp_allocator, sep, self.pos[from..]) catch "";
+    }
 };
 
 pub fn parse(arena: std.mem.Allocator, argv: []const []const u8) !Args {
@@ -92,6 +98,58 @@ pub fn printOrFail(c: *Ctx, res: httpc.Response) !void {
         return error.HttpError;
     }
     try c.out.print("{s}\n", .{res.body});
+}
+
+/// JSON 字符串转义（不依赖 std.json 的 Stringify，行为可控）。
+pub fn jsonEscape(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var n: usize = 0;
+    for (s) |c| {
+        n += switch (c) {
+            '"', '\\', '\n', '\r', '\t' => 2,
+            else => if (c < 0x20) 6 else 1,
+        };
+    }
+    const out = try arena.alloc(u8, n);
+    var i: usize = 0;
+    for (s) |c| {
+        switch (c) {
+            '"' => {
+                out[i] = '\\';
+                out[i + 1] = '"';
+                i += 2;
+            },
+            '\\' => {
+                out[i] = '\\';
+                out[i + 1] = '\\';
+                i += 2;
+            },
+            '\n' => {
+                out[i] = '\\';
+                out[i + 1] = 'n';
+                i += 2;
+            },
+            '\r' => {
+                out[i] = '\\';
+                out[i + 1] = 'r';
+                i += 2;
+            },
+            '\t' => {
+                out[i] = '\\';
+                out[i + 1] = 't';
+                i += 2;
+            },
+            else => {
+                if (c < 0x20) {
+                    _ = std.fmt.bufPrint(out[i .. i + 6], "\\u{x:0>4}", .{c}) catch {};
+                    i += 6;
+                } else {
+                    out[i] = c;
+                    i += 1;
+                }
+            },
+        }
+    }
+    return out[0..i];
 }
 
 pub const BUF = 2 << 20; // 2 MiB
