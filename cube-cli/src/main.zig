@@ -5,6 +5,7 @@
 //!   CUBESANDBOX_API_KEY    控制面 API Key
 //!   CUBESANDBOX_PROXY_URL  数据面网关（exec 等沙箱内操作需要）
 const std = @import("std");
+const netfix = @import("netfix.zig");
 const cfg = @import("cfg.zig");
 const httpc = @import("httpc.zig");
 const ctxmod = @import("ctx.zig");
@@ -28,7 +29,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var threaded: std.Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
-    const io = threaded.io();
+    const io = netfix.install(gpa, threaded.io());
 
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();

@@ -3,6 +3,7 @@
 //! 约定：所有部署相关取值通过环境变量传入（SANDBOX_BASE / SANDBOX_KEY），
 //! 仓库内不含任何主机名、IP 或凭据。
 const std = @import("std");
+const netfix = @import("netfix.zig");
 const cfg = @import("cfg.zig");
 const ctxmod = @import("ctx.zig");
 const httpc = @import("httpc.zig");
@@ -24,7 +25,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var threaded: std.Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
-    const io = threaded.io();
+    const io = netfix.install(gpa, threaded.io());
 
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
