@@ -122,7 +122,20 @@ fn cmdHealth(c: *Ctx) !void {
 
 fn cmdNew(c: *Ctx, args: []const []const u8) !void {
     const a = try util.parse(c.arena, args);
-    const tpl = a.get("template") orelse return error.MissingArg;
+    // --template 优先；没有则按 --need 动态挑（与 tpl-pick 同一逻辑）
+    var tpl: []const u8 = "";
+    if (a.get("template")) |t| {
+        tpl = t;
+    } else if (a.get("need")) |need| {
+        const p = cmd_template.pickByNeed(c, need) catch {
+            try c.out.print("没有满足 --need={s} 的 READY 模板\n", .{need});
+            return error.NotFound;
+        };
+        tpl = p.id;
+        std.debug.print("[template] --need={s} → {s}\n", .{ need, p.id });
+    } else {
+        return error.MissingArg;
+    }
 
     var timeout_part: []const u8 = "";
     if (a.get("timeout")) |t| {
@@ -154,8 +167,8 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
     if (gw == 0) return;
     const proxy = cfg.proxyURL() orelse return;
     const base = try std.fmt.allocPrint(c.arena, "{s}/sandbox/{s}", .{ ctxmod.trimSlash(proxy), sid });
-    try c.out.print("[sandbox] AIO 网关: {s}/{d}/   ← aio-cli 的 SANDBOX_BASE\n", .{ base, gw });
-    try c.out.print("[sandbox] envd    : {s}/49983/\n", .{base});
+    std.debug.print("[sandbox] AIO 网关: {s}/{d}/   ← aio-cli 的 SANDBOX_BASE\n", .{ base, gw });
+    std.debug.print("[sandbox] envd    : {s}/49983/\n", .{base});
 }
 
 fn cmdList(c: *Ctx) !void {

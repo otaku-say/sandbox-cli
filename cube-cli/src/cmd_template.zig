@@ -187,32 +187,34 @@ fn tplCaps(c: *Ctx, a: util.Args) !void {
     }
 }
 
-fn tplPick(c: *Ctx, a: util.Args) !void {
-    const need = a.get("need") orelse CAP_BASE;
+/// 选型结果：模板 ID + 能力 + 网关端口
+pub const Picked = struct { id: []const u8, caps: []const u8, gw: u16 };
+
+/// 按能力挑模板（能力覆盖 + 更薄者优先）—— tpl-pick 与 new --need 共用。
+pub fn pickByNeed(c: *Ctx, need: []const u8) !Picked {
     const buf = try c.arena.alloc(u8, 2 << 20);
     const list = try fetchTemplates(c);
-
-    var best: ?[]const u8 = null;
-    var best_caps: []const u8 = "";
-    var best_gw: u16 = 0;
+    var best: ?Picked = null;
     for (list) |t| {
         if (!std.mem.eql(u8, t.status, "READY")) continue;
         const ports = try detailPorts(c, t.templateID, buf);
         const caps = try capsFromStatic(c.arena, ports, t.imageInfo);
         if (!covers(caps, need)) continue;
-        if (best == null or caps.len < best_caps.len) {
-            best = t.templateID;
-            best_caps = caps;
-            best_gw = guessGateway(ports, t.imageInfo);
+        if (best == null or caps.len < best.?.caps.len) {
+            best = .{ .id = t.templateID, .caps = caps, .gw = guessGateway(ports, t.imageInfo) };
         }
     }
-    if (best) |id| {
-        try c.out.print("{s}\n", .{id});
-        try c.out.print("need={s}  能力={s}  网关={d}\n", .{ need, best_caps, best_gw });
-    } else {
+    return best orelse error.NotFound;
+}
+
+fn tplPick(c: *Ctx, a: util.Args) !void {
+    const need = a.get("need") orelse CAP_BASE;
+    const p = pickByNeed(c, need) catch {
         try c.out.print("没有满足 --need={s} 的 READY 模板\n", .{need});
         return error.NotFound;
-    }
+    };
+    try c.out.print("{s}\n", .{p.id});
+    try c.out.print("need={s}  能力={s}  网关={d}\n", .{ need, p.caps, p.gw });
 }
 
 fn eq(a: []const u8, b: []const u8) bool {
