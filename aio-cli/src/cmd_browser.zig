@@ -103,8 +103,11 @@ fn cmdShot(c: *Ctx, a: util.Args) !void {
 fn cmdEval(c: *Ctx, a: util.Args) !void {
     const expr = a.joinFrom(0, " ");
     if (expr.len == 0) return error.MissingArg;
-    const body = try std.fmt.allocPrint(c.arena, "{{\"expression\":\"{s}\"}}", .{try util.jsonEscape(c.arena, expr)});
-    try postJ(c, "/v2/browser/evaluate", body);
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
+    try w.print("{{\"expression\":\"{s}\"", .{try util.jsonEscape(c.arena, expr)});
+    if (a.has("await")) try w.print(",\"await_promise\":true", .{});
+    try w.print("}}", .{});
+    try postJ(c, "/v2/browser/evaluate", w.buffered());
 }
 
 /// br-click --selector=<css>  |  br-fill --selector= --value=
@@ -125,7 +128,8 @@ fn cmdClickFill(c: *Ctx, cmd: []const u8, a: util.Args) !void {
 
 /// br-snapshot [--interactive]
 fn cmdSnapshot(c: *Ctx, a: util.Args) !void {
-    const body = if (a.has("interactive")) "{\"interactive\":true}" else "{}";
+    // 服务端字段名是 interactive_only（旧版发 interactive 不生效）
+    const body = if (a.has("interactive")) "{\"interactive_only\":true}" else "{}";
     try postJ(c, "/v2/browser/snapshot", body);
 }
 
@@ -160,26 +164,86 @@ fn cmdTabs(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     }
 }
 
-/// br-cookies [--url=] / br-cookie-set --name= --value=
+/// br-cookies [--url=] [--domain=]
+/// br-cookie-set --name= --value= [--url= --domain=]      （发 {"cookies":[{...}]} 包装体）
+/// br-cookie-rm [--all | --name= | --url= | --domain=]
 fn cmdCookies(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     if (std.mem.eql(u8, cmd, "br-cookies")) {
-        var path: []const u8 = "/v2/browser/cookies";
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 1024));
+        try w.print("/v2/browser/cookies", .{});
+        var first = true;
         if (a.get("url")) |u| {
-            path = try std.fmt.allocPrint(c.arena, "/v2/browser/cookies?url={s}", .{u});
+            try w.print("?url={s}", .{try util.urlEncode(c.arena, u)});
+            first = false;
         }
-        try getJ(c, path);
+        if (a.get("domain")) |d| {
+            try w.print("{s}domain={s}", .{ if (first) "?" else "&", try util.urlEncode(c.arena, d) });
+        }
+        try getJ(c, w.buffered());
         return;
     }
+    if (std.mem.eql(u8, cmd, "br-cookie-rm")) {
+        // 至少要给一个条件（--all 或 name/url/domain 之一），防误删全部
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 1024));
+        try w.print("/v2/browser/cookies", .{});
+        var first = true;
+        if (a.has("all")) {
+            try w.print("?all=true", .{});
+            first = false;
+        }
+        if (a.get("name")) |v| {
+            try w.print("{s}name={s}", .{ if (first) "?" else "&", try util.urlEncode(c.arena, v) });
+            first = false;
+        }
+        if (a.get("url")) |v| {
+            try w.print("{s}url={s}", .{ if (first) "?" else "&", try util.urlEncode(c.arena, v) });
+            first = false;
+        }
+        if (a.get("domain")) |v| {
+            try w.print("{s}domain={s}", .{ if (first) "?" else "&", try util.urlEncode(c.arena, v) });
+            first = false;
+        }
+        if (first) return error.MissingArg;
+        const buf = try c.arena.alloc(u8, BUF);
+        const res = try httpc.del(c.client, try c.url(w.buffered()), try auth(c), buf);
+        if (!res.ok()) return fail(c, res);
+        try c.out.print("{s}\n", .{res.body});
+        return;
+    }
+    // br-cookie-set：必须发 {"cookies":[ ... ]} 包装体（旧版扁平体不生效）
     const name = a.get("name") orelse return error.MissingArg;
     const value = a.get("value") orelse "";
     var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 16 << 10));
-    try w.print("{{\"name\":\"{s}\",\"value\":\"{s}\"", .{
+    try w.print("{{\"cookies\":[{{\"name\":\"{s}\",\"value\":\"{s}\"", .{
         try util.jsonEscape(c.arena, name), try util.jsonEscape(c.arena, value),
     });
     if (a.get("url")) |u| try w.print(",\"url\":\"{s}\"", .{try util.jsonEscape(c.arena, u)});
     if (a.get("domain")) |d| try w.print(",\"domain\":\"{s}\"", .{try util.jsonEscape(c.arena, d)});
-    try w.print("}}", .{});
+    try w.print("}}]}}", .{});
     try postJ(c, "/v2/browser/cookies", w.buffered());
+}
+
+/// br-upload --paths=/a,/b [--selector=<css> | --ref=<快照ref>] [--tab=<id>]
+/// 把沙箱内的文件挂到页面的 <input type=file>（POST /v2/browser/upload）。
+fn cmdUpload(c: *Ctx, a: util.Args) !void {
+    const paths = a.get("paths") orelse return error.MissingArg;
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
+    try w.print("{{\"paths\":[", .{});
+    var it = std.mem.splitScalar(u8, paths, ',');
+    var first = true;
+    while (it.next()) |p| {
+        if (p.len == 0) continue;
+        if (!first) try w.print(",", .{});
+        try w.print("\"{s}\"", .{try util.jsonEscape(c.arena, p)});
+        first = false;
+    }
+    if (first) return error.MissingArg; // 一个路径都没有
+    try w.print("]", .{});
+    if (a.get("selector")) |s| try w.print(",\"selector\":\"{s}\"", .{try util.jsonEscape(c.arena, s)});
+    if (a.get("ref")) |r| try w.print(",\"ref\":\"{s}\"", .{try util.jsonEscape(c.arena, r)});
+    if (a.get("tab")) |t| try w.print(",\"tab_id\":\"{s}\"", .{try util.jsonEscape(c.arena, t)});
+    try w.print("}}", .{});
+    try postJ(c, "/v2/browser/upload", w.buffered());
 }
 
 fn eq(a: []const u8, b: []const u8) bool {
@@ -212,8 +276,12 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         try cmdTabs(c, cmd, a);
         return true;
     }
-    if (eq(cmd, "br-cookies") or eq(cmd, "br-cookie-set")) {
+    if (eq(cmd, "br-cookies") or eq(cmd, "br-cookie-set") or eq(cmd, "br-cookie-rm")) {
         try cmdCookies(c, cmd, a);
+        return true;
+    }
+    if (eq(cmd, "br-upload")) {
+        try cmdUpload(c, a);
         return true;
     }
     if (eq(cmd, "br-network")) {

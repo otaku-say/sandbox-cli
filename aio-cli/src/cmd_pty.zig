@@ -282,6 +282,11 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         try cmdGet(c, "/v2/pty/sessions");
         return true;
     }
+    if (eq(cmd, "pty-info")) {
+        const id = a.at(0) orelse return error.MissingArg;
+        try cmdGet(c, try std.fmt.allocPrint(c.arena, "/v2/pty/sessions/{s}", .{id}));
+        return true;
+    }
     if (eq(cmd, "pty")) {
         try cmdExec(c, a);
         return true;

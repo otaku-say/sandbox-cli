@@ -275,6 +275,8 @@ fn cmdSess(c: *Ctx, cmd: []const u8, a: util.Args) !void {
         var w = std.Io.Writer.fixed(try c.arena.alloc(u8, BODY));
         try w.print("{{\"id\":\"{s}\"", .{try util.jsonEscape(c.arena, id)});
         if (a.get("cwd")) |v| try w.print(",\"cwd\":\"{s}\"", .{try util.jsonEscape(c.arena, v)});
+        if (a.get("env")) |v| try writeEnv(&w, c, v);
+        if (a.get("user")) |v| try w.print(",\"user\":\"{s}\"", .{try util.jsonEscape(c.arena, v)});
         try w.print("}}", .{});
         const res = try httpc.postJson(c.client, try c.url("/v2/commands/sessions"), try jsonAuth(c), w.buffered(), buf);
         if (!res.ok()) return errOut(c, res);

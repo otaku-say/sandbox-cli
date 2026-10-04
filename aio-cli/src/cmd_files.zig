@@ -74,8 +74,13 @@ fn postJSON(c: *Ctx, path: []const u8, body: []const u8) !void {
 fn cmdCat(c: *Ctx, a: util.Args) !void {
     const path = a.at(0) orelse return error.MissingArg;
     const buf = try c.arena.alloc(u8, BUF);
-    const q = try queryPath(c, "/v2/fs/read", path, a.get("user"));
-    const res = try httpc.get(c.client, try c.url(q), try auth(c), buf);
+    // start_line/end_line：行级截取（end_line 不含尾行）
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 1024));
+    try w.print("/v2/fs/read?path={s}", .{try urlEncode(c.arena, path)});
+    if (a.get("user")) |u| try w.print("&user={s}", .{try urlEncode(c.arena, u)});
+    if (a.get("start")) |v| try w.print("&start_line={s}", .{v});
+    if (a.get("end")) |v| try w.print("&end_line={s}", .{v});
+    const res = try httpc.get(c.client, try c.url(w.buffered()), try auth(c), buf);
     if (!res.ok()) return fail(c, res);
     // aiod 返回 {"success":true,"data":{"content":"..."}}，提取 content 原样输出
     const parsed = std.json.parseFromSlice(std.json.Value, c.arena, res.body, .{}) catch {
@@ -171,9 +176,14 @@ fn copyMove(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     const src = a.at(0) orelse return error.MissingArg;
     const dst = a.at(1) orelse return error.MissingArg;
     const route: []const u8 = if (std.mem.eql(u8, cmd, "mv")) "/v2/fs/move" else "/v2/fs/copy";
-    const b = try std.fmt.allocPrint(c.arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\"}}", .{
-        try util.jsonEscape(c.arena, src), try util.jsonEscape(c.arena, dst),
-    });
+    const b = if (a.has("overwrite"))
+        try std.fmt.allocPrint(c.arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\",\"overwrite\":true}}", .{
+            try util.jsonEscape(c.arena, src), try util.jsonEscape(c.arena, dst),
+        })
+    else
+        try std.fmt.allocPrint(c.arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\"}}", .{
+            try util.jsonEscape(c.arena, src), try util.jsonEscape(c.arena, dst),
+        });
     try postJSON(c, route, b);
 }
 
@@ -204,13 +214,38 @@ fn cmdEdit(c: *Ctx, a: util.Args) !void {
     try postJSON(c, "/v2/fs/edit", w.buffered());
 }
 
+/// 输出 JSON 字符串数组字段："key":["a","b"]（逗号分隔输入）。
+fn writeStrArray(w: *std.Io.Writer, c: *Ctx, key: []const u8, spec: []const u8) !void {
+    try w.print(",\"{s}\":[", .{key});
+    var it = std.mem.splitScalar(u8, spec, ',');
+    var first = true;
+    while (it.next()) |p| {
+        if (p.len == 0) continue;
+        if (!first) try w.print(",", .{});
+        try w.print("\"{s}\"", .{try util.jsonEscape(c.arena, p)});
+        first = false;
+    }
+    try w.print("]", .{});
+}
+
 fn cmdGrep(c: *Ctx, a: util.Args) !void {
     const path = a.at(0) orelse return error.MissingArg;
     const pattern = a.at(1) orelse return error.MissingArg;
-    const body = try std.fmt.allocPrint(c.arena, "{{\"path\":\"{s}\",\"pattern\":\"{s}\",\"recursive\":true}}", .{
+    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
+    try w.print("{{\"path\":\"{s}\",\"pattern\":\"{s}\",\"recursive\":true", .{
         try util.jsonEscape(c.arena, path), try util.jsonEscape(c.arena, pattern),
     });
-    try postJSON(c, "/v2/fs/grep", body);
+    if (a.has("fixed")) try w.print(",\"fixed_strings\":true", .{});
+    if (a.has("ignore-case")) try w.print(",\"case_insensitive\":true", .{});
+    if (a.has("multiline")) try w.print(",\"multiline\":true", .{});
+    if (a.get("context")) |v| try w.print(",\"context_before\":{s},\"context_after\":{s}", .{ v, v });
+    if (a.get("max")) |v| try w.print(",\"max_results\":{s}", .{v});
+    if (a.get("offset")) |v| try w.print(",\"offset\":{s}", .{v});
+    if (a.get("type")) |v| try w.print(",\"type\":\"{s}\"", .{try util.jsonEscape(c.arena, v)});
+    if (a.get("include")) |v| try writeStrArray(&w, c, "include", v);
+    if (a.get("exclude")) |v| try writeStrArray(&w, c, "exclude", v);
+    try w.print("}}", .{});
+    try postJSON(c, "/v2/fs/grep", w.buffered());
 }
 
 fn cmdSearch(c: *Ctx, a: util.Args) !void {
@@ -357,6 +392,114 @@ fn gunzip(arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
     return try d.reader.readAllocShort(arena, 128 << 20);
 }
 
+// ---------------- tree（GET /v2/fs/tree 返回原始 tar，这里解析成条目树） ----------------
+
+const TarEntry = struct { name: []const u8, is_dir: bool };
+
+/// 读 ustar 八进制字段。
+fn tarOctal(block: []const u8, off: usize, len: usize) u64 {
+    var v: u64 = 0;
+    var i = off;
+    const end = off + len;
+    while (i < end and (block[i] == ' ' or block[i] == 0)) i += 1;
+    while (i < end) : (i += 1) {
+        const ch = block[i];
+        if (ch < '0' or ch > '7') break;
+        v = v * 8 + (ch - '0');
+    }
+    return v;
+}
+
+/// 从 tar 字节流提取条目（跳过 pax/长名扩展头；数据区按 512 对齐跳过）。
+fn tarEntries(arena: std.mem.Allocator, data: []const u8) ![]TarEntry {
+    const maxn = data.len / 512 + 1;
+    const out = try arena.alloc(TarEntry, maxn);
+    var n: usize = 0;
+    var pos: usize = 0;
+    while (pos + 512 <= data.len) {
+        const h = data[pos .. pos + 512];
+        var allzero = true;
+        for (h) |b| {
+            if (b != 0) {
+                allzero = false;
+                break;
+            }
+        }
+        if (allzero) break;
+        var name: []const u8 = h[0..100];
+        if (std.mem.indexOfScalar(u8, name, 0)) |z| name = name[0..z];
+        var prefix: []const u8 = h[345..500];
+        if (std.mem.indexOfScalar(u8, prefix, 0)) |z| prefix = prefix[0..z];
+        const size = tarOctal(h, 124, 12);
+        const tf = h[156];
+        const is_dir = tf == '5' or std.mem.endsWith(u8, name, "/");
+        // x/g = pax 扩展头，L/K = GNU 长名：跳过其数据，不当条目
+        if (tf != 'x' and tf != 'g' and tf != 'L' and tf != 'K' and name.len > 0) {
+            if (prefix.len > 0) {
+                out[n] = .{ .name = try std.fmt.allocPrint(arena, "{s}/{s}", .{ prefix, name }), .is_dir = is_dir };
+            } else {
+                out[n] = .{ .name = name, .is_dir = is_dir };
+            }
+            n += 1;
+        }
+        pos += 512 + ((size + 511) / 512) * 512;
+    }
+    return out[0..n];
+}
+
+/// tree [远端路径] [--user=] [--tar | --out=<本地文件>]
+/// 默认把服务端返回的 tar 解析成条目树打印；--tar 输出原始字节；--out= 存成本地 tar。
+fn cmdTree(c: *Ctx, a: util.Args) !void {
+    const path = a.at(0) orelse "/";
+    const buf = try c.arena.alloc(u8, BUF);
+    const q = try queryPath(c, "/v2/fs/tree", path, a.get("user"));
+    const res = try httpc.get(c.client, try c.url(q), try auth(c), buf);
+    if (!res.ok()) return fail(c, res);
+
+    if (a.has("tar")) {
+        try c.out.writeAll(res.body); // 原始 tar 字节，不加修饰
+        return;
+    }
+    if (a.get("out")) |out_path| {
+        const f = try std.Io.Dir.cwd().createFile(c.io, out_path, .{});
+        defer f.close(c.io);
+        var wbuf: [8192]u8 = undefined;
+        var fw = f.writer(c.io, &wbuf);
+        try fw.interface.writeAll(res.body);
+        try fw.interface.flush();
+        try c.out.print("saved {d} bytes -> {s}\n", .{ res.body.len, out_path });
+        return;
+    }
+
+    var entries = try tarEntries(c.arena, res.body);
+    // 插入排序（按路径名）
+    var i: usize = 1;
+    while (i < entries.len) : (i += 1) {
+        const cur = entries[i];
+        var j = i;
+        while (j > 0 and std.mem.order(u8, entries[j - 1].name, cur.name) == .gt) : (j -= 1) {
+            entries[j] = entries[j - 1];
+        }
+        entries[j] = cur;
+    }
+    const pad = "                                        "; // 40 空格
+    var prev: []const u8 = "";
+    for (entries) |e| {
+        var nm = e.name;
+        if (std.mem.endsWith(u8, nm, "/")) nm = nm[0 .. nm.len - 1];
+        if (std.mem.eql(u8, nm, prev)) continue; // 同路径去重
+        prev = nm;
+        var depth: usize = 0;
+        for (nm) |ch| {
+            if (ch == '/') depth += 1;
+        }
+        const base = if (std.mem.lastIndexOfScalar(u8, nm, '/')) |k| nm[k + 1 ..] else nm;
+        const width = @min(depth * 2, pad.len);
+        try c.out.writeAll(pad[0..width]);
+        try c.out.print("{s}{s}\n", .{ base, if (e.is_dir) "/" else "" });
+    }
+}
+
 // ---------------- 鉴权 ----------------
 
 fn auth(c: *Ctx) !httpc.Headers {
@@ -428,9 +571,9 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         try getJSON(c, try queryPath(c, "/v2/fs/stat", path, a.get("user")));
         return true;
     }
+    // tree：解析 tar 输出版
     if (eq(cmd, "tree")) {
-        const path = a.at(0) orelse "/";
-        try getJSON(c, try queryPath(c, "/v2/fs/tree", path, a.get("user")));
+        try cmdTree(c, a);
         return true;
     }
     if (eq(cmd, "mkdir")) {

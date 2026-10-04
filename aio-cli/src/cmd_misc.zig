@@ -85,6 +85,11 @@ fn cmdCodeSess(c: *Ctx, cmd: []const u8, a: util.Args) !void {
         try getJ(c, "/v2/code/sessions");
         return;
     }
+    if (std.mem.eql(u8, cmd, "code-sess-get")) {
+        const id = a.at(0) orelse return error.MissingArg;
+        try getJ(c, try std.fmt.allocPrint(c.arena, "/v2/code/sessions/{s}", .{id}));
+        return;
+    }
     if (std.mem.eql(u8, cmd, "code-sess-new")) {
         const body = try std.fmt.allocPrint(c.arena, "{{\"language\":\"{s}\"}}", .{a.get("lang") orelse "python"});
         try postJ(c, "/v2/code/sessions", body);
@@ -200,12 +205,18 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         try cmdCode(c, a);
         return true;
     }
-    if (eq(cmd, "code-info") or eq(cmd, "code-sess-ls") or eq(cmd, "code-sess-new") or eq(cmd, "code-sess-rm")) {
+    if (eq(cmd, "code-info") or eq(cmd, "code-sess-ls") or eq(cmd, "code-sess-new") or
+        eq(cmd, "code-sess-rm") or eq(cmd, "code-sess-get"))
+    {
         try cmdCodeSess(c, cmd, a);
         return true;
     }
     if (eq(cmd, "watch") or eq(cmd, "watch-poll") or eq(cmd, "watch-rm")) {
         try cmdWatch(c, cmd, a);
+        return true;
+    }
+    if (eq(cmd, "watch-ls")) {
+        try getJ(c, "/v2/watch");
         return true;
     }
     if (eq(cmd, "watch-events")) {

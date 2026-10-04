@@ -154,6 +154,33 @@ pub fn jsonEscape(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
 
 pub const BUF = 2 << 20; // 2 MiB
 
+/// 百分号编码（保留 /，与 cmd_files 行为一致）。
+pub fn urlEncode(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    const hex = "0123456789ABCDEF";
+    var n: usize = 0;
+    for (s) |ch| {
+        const safe = (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or
+            (ch >= '0' and ch <= '9') or ch == '-' or ch == '_' or ch == '.' or ch == '~' or ch == '/';
+        n += if (safe) 1 else 3;
+    }
+    const out = try arena.alloc(u8, n);
+    var i: usize = 0;
+    for (s) |ch| {
+        const safe = (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or
+            (ch >= '0' and ch <= '9') or ch == '-' or ch == '_' or ch == '.' or ch == '~' or ch == '/';
+        if (safe) {
+            out[i] = ch;
+            i += 1;
+        } else {
+            out[i] = '%';
+            out[i + 1] = hex[ch >> 4];
+            out[i + 2] = hex[ch & 0x0F];
+            i += 3;
+        }
+    }
+    return out[0..i];
+}
+
 /// 与 jsonEscape 输出等长的上界（用于精确分配写缓冲）。
 pub fn jsonEscapedLen(s: []const u8) usize {
     var n: usize = 0;

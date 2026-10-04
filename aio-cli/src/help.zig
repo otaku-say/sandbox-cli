@@ -178,9 +178,11 @@ pub const table = [_]Entry{
         .brief = "新建命令会话（固定 cwd）",
         .detail =
         \\用途:  POST /v2/commands/sessions。
-        \\用法:  aio-cli sess-new <会话id> [--cwd=<目录>]
+        \\用法:  aio-cli sess-new <会话id> [--cwd=<目录>] [--env=K=V,K2=V2] [--user=<用户>]
         \\参数:  --cwd=   会话内固定的工作目录。
-        \\示例:  aio-cli sess-new work --cwd=/root/repo
+        \\       --env=   会话级环境变量（K=V 逗号分隔 → JSON 对象，同名后者覆盖）。
+        \\       --user=  以指定用户跑会话命令。
+        \\示例:  aio-cli sess-new work --cwd=/root/repo --env=FOO=bar
         \\注意:  cwd 在创建时固定；会话内 `cd` 不跨调用保留。
         ,
     },
@@ -226,11 +228,12 @@ pub const table = [_]Entry{
         .brief = "读沙箱内文件到标准输出",
         .detail =
         \\用途:  GET /v2/fs/read?path=…，取 data.content 原样打到 stdout。
-        \\用法:  aio-cli cat <远端路径> [--user=<用户>]
+        \\用法:  aio-cli cat <远端路径> [--start=<行>] [--end=<行>] [--user=<用户>]
         \\       （`aio-cli read ...` 是同义词）
         \\参数:  --user=   以指定用户身份读。
+        \\       --start= / --end=   行区间（0 起；end 不含尾行）。
         \\示例:  aio-cli cat /etc/hostname
-        \\       aio-cli cat /tmp/data.csv > data.csv
+        \\       aio-cli cat /tmp/data.csv --start=0 --end=10 > data.csv
         ,
     },
     .{
@@ -321,11 +324,14 @@ pub const table = [_]Entry{
         .group = 2,
         .brief = "递归列目录树",
         .detail =
-        \\用途:  GET /v2/fs/tree?path=…，递归展开。
-        \\用法:  aio-cli tree [远端路径] [--user=<用户>]
+        \\用途:  GET /v2/fs/tree?path=…，服务端返回的是原始 tar（x-tar）字节流。
+        \\用法:  aio-cli tree [远端路径] [--user=<用户>] [--tar | --out=<本地文件>]
         \\参数:  [远端路径]  缺省为 /。
+        \\       --tar   原样输出 tar 字节（可管道给 tar tf -）。
+        \\       --out=  把 tar 存到本地文件。
         \\示例:  aio-cli tree /root/repo
-        \\注意:  没有 `--depth=` / `--hidden=` 选项（源码未实现），深度由服务端决定。
+        \\       aio-cli tree /root/repo --out=repo.tar && tar tf repo.tar | head
+        \\注意:  默认输出是**解析后的条目树**（缩进表示层级）；旧版直接刷二进制。
         ,
     },
     .{
@@ -357,9 +363,10 @@ pub const table = [_]Entry{
         .brief = "复制",
         .detail =
         \\用途:  POST /v2/fs/copy。
-        \\用法:  aio-cli cp <源> <目标>
+        \\用法:  aio-cli cp <源> <目标> [--overwrite]
+        \\参数:  --overwrite  目标已存在时覆盖。
         \\示例:  aio-cli cp /tmp/a.txt /tmp/b.txt
-        \\注意:  目标已存在时不会自动覆盖（需要先 rm）。
+        \\       aio-cli cp /tmp/a.txt /tmp/b.txt --overwrite
         ,
     },
     .{
@@ -368,9 +375,10 @@ pub const table = [_]Entry{
         .brief = "移动/改名",
         .detail =
         \\用途:  POST /v2/fs/move。
-        \\用法:  aio-cli mv <源> <目标>
+        \\用法:  aio-cli mv <源> <目标> [--overwrite]
+        \\参数:  --overwrite  目标已存在时覆盖。
         \\示例:  aio-cli mv /tmp/a.txt /tmp/b.txt
-        \\注意:  同名目标已存在时会失败。
+        \\       aio-cli mv /tmp/a.txt /tmp/b.txt --overwrite
         ,
     },
     .{
@@ -398,11 +406,18 @@ pub const table = [_]Entry{
         .group = 2,
         .brief = "在沙箱内按正则搜文件内容",
         .detail =
-        \\用途:  POST /v2/fs/grep，固定 recursive=true。
-        \\用法:  aio-cli grep <远端路径> <正则>
-        \\参数:  <远端路径> <正则>  两个位置参数，均必填。
-        \\示例:  aio-cli grep /root/repo 'fn main'
-        \\注意:  没有 --fixed / --ignore-case / --include / --max 选项（源码未实现）。
+        \\用途:  POST /v2/fs/grep（固定 recursive=true）。
+        \\用法:  aio-cli grep <远端路径> <正则> [--fixed] [--ignore-case] [--multiline]
+        \\                      [--include=a,b] [--exclude=a,b] [--context=<行>]
+        \\                      [--max=<条>] [--offset=<条>] [--type=<类型>]
+        \\参数:  --fixed        按字面串搜（fixed_strings=true）。
+        \\       --ignore-case  忽略大小写（case_insensitive=true）。
+        \\       --include= / --exclude=   文件名通配数组（逗号分隔）。
+        \\       --context=     前后各 N 行上下文。
+        \\       --multiline    跨行匹配。
+        \\       --max= / --offset=        结果条数上限 / 偏移。
+        \\       --type=        文件类型过滤（如 py、rust）。
+        \\示例:  aio-cli grep /root/repo 'fn main' --include='*.zig' --max=20
         ,
     },
     .{
@@ -499,6 +514,16 @@ pub const table = [_]Entry{
         ,
     },
     .{
+        .name = "pty-info",
+        .group = 3,
+        .brief = "看单个 PTY 会话详情",
+        .detail =
+        \\用途:  GET /v2/pty/sessions/<id>。
+        \\用法:  aio-cli pty-info <会话id>
+        \\示例:  aio-cli pty-info t1
+        ,
+    },
+    .{
         .name = "pty-rm",
         .group = 3,
         .brief = "删除 PTY 会话",
@@ -586,6 +611,16 @@ pub const table = [_]Entry{
         ,
     },
     .{
+        .name = "code-sess-get",
+        .group = 4,
+        .brief = "看单个代码会话详情",
+        .detail =
+        \\用途:  GET /v2/code/sessions/<id>。
+        \\用法:  aio-cli code-sess-get <会话id>
+        \\示例:  aio-cli code-sess-get cs_abc123
+        ,
+    },
+    .{
         .name = "code-sess-rm",
         .group = 4,
         .brief = "删除代码会话",
@@ -640,11 +675,11 @@ pub const table = [_]Entry{
         .brief = "在页面里执行 JS 表达式",
         .detail =
         \\用途:  POST /v2/browser/evaluate。
-        \\用法:  aio-cli br-eval <JS 表达式…>
+        \\用法:  aio-cli br-eval <JS 表达式…> [--await]
         \\参数:  位置参数用空格拼成表达式；不需要引号。
+        \\       --await  等待返回的 Promise（await_promise=true）。
         \\示例:  aio-cli br-eval 'document.title'
-        \\       aio-cli br-eval 'Array.from(document.querySelectorAll("a")).length'
-        \\注意:  源码注释提到 `--await`，**当前未实现**（Promise 结果不会自动等待）。
+        \\       aio-cli br-eval 'fetch("/api").then(r => r.text())' --await
         ,
     },
     .{
@@ -678,7 +713,7 @@ pub const table = [_]Entry{
         .detail =
         \\用途:  POST /v2/browser/snapshot。
         \\用法:  aio-cli br-snapshot [--interactive]
-        \\参数:  --interactive  interactive=true，只要可交互节点。
+        \\参数:  --interactive  interactive_only=true，只要可交互节点。
         \\示例:  aio-cli br-snapshot
         \\       aio-cli br-snapshot --interactive
         ,
@@ -743,10 +778,36 @@ pub const table = [_]Entry{
         .group = 5,
         .brief = "写 Cookie",
         .detail =
-        \\用途:  POST /v2/browser/cookies。
+        \\用途:  POST /v2/browser/cookies（发 {"cookies":[…]} 包装体）。
         \\用法:  aio-cli br-cookie-set --name=<名> --value=<值> [--url=<url>] [--domain=<域>]
         \\参数:  --name=  必填；--value= 默认空串；--url= / --domain= 可选。
         \\示例:  aio-cli br-cookie-set --name=token --value=abc --domain=example.com
+        ,
+    },
+    .{
+        .name = "br-cookie-rm",
+        .group = 5,
+        .brief = "删 Cookie（DELETE /v2/browser/cookies）",
+        .detail =
+        \\用途:  DELETE /v2/browser/cookies。
+        \\用法:  aio-cli br-cookie-rm [--all | --name=<名> | --url=<url> | --domain=<域>]
+        \\参数:  至少给一个条件；--all 清全部。
+        \\示例:  aio-cli br-cookie-rm --name=token
+        \\       aio-cli br-cookie-rm --all
+        ,
+    },
+    .{
+        .name = "br-upload",
+        .group = 5,
+        .brief = "往 <input type=file> 挂文件（沙箱内路径）",
+        .detail =
+        \\用途:  POST /v2/browser/upload，把**沙箱内**文件挂给页面上传控件。
+        \\用法:  aio-cli br-upload --paths=<沙箱内文件,…> [--selector=<css> | --ref=<快照ref>] [--tab=<id>]
+        \\参数:  --paths=   逗号分隔的沙箱内绝对路径（必填）。
+        \\       --selector=  目标 <input type=file> 的 CSS 选择器。
+        \\       --ref=       或者用快照元素 ref。
+        \\示例:  aio-cli br-upload --paths=/tmp/a.png --selector='#file-input'
+        \\注意:  文件必须先存在于沙箱里（用 write / put 先放进去）。
         ,
     },
     .{
@@ -844,7 +905,18 @@ pub const table = [_]Entry{
         \\用法:  aio-cli watch-rm <watcher_id>
         \\参数:  <watcher_id>  位置参数，必填。
         \\示例:  aio-cli watch-rm "$W"
-        \\注意:  没有 `watch-ls` 命令（源码未实现），ID 要自己留好。
+        \\注意:  删除前可用 `watch-ls` 列出现有监听器。
+        ,
+    },
+    .{
+        .name = "watch-ls",
+        .group = 6,
+        .brief = "列出所有监听器",
+        .detail =
+        \\用途:  GET /v2/watch，输出原始 JSON。
+        \\用法:  aio-cli watch-ls
+        \\参数:  无。
+        \\示例:  aio-cli watch-ls
         ,
     },
 
@@ -1071,36 +1143,37 @@ pub fn printTop(out: *std.Io.Writer) !void {
         \\  health / sandbox-info / sandbox-packages [--lang=]   version / help [命令|all]
         \\
         \\【执行】
-        \\  exec <命令…> [--cwd= --shell= --user= --session= --timeout= --max-output=]
-        \\  exec --id=<id> [--offset= --stderr-offset=]   async <命令…>   log <id> [--follow]
+        \\  exec <命令…> [--cwd= --shell= --user= --session= --env= --timeout= --max-output=]
+        \\  exec --id=<id> [--offset= --stderr-offset= --wait --wait-timeout=]   async <命令…>   log <id> [--follow]
         \\  kill <id> [--signal=]   stdin <id> <文本> [--enter]
-        \\  sess-new <id> [--cwd=] / sess <id> <命令…> [--timeout=] / sess-ls / sess-rm <id>
+        \\  sess-new <id> [--cwd= --env=] / sess <id> <命令…> [--timeout=] / sess-ls / sess-rm <id>
         \\
         \\【文件】
-        \\  cat|read <路径> [--user=]    write <本地|-> <远端>    get <远端> <本地> [--user=]
+        \\  cat|read <路径> [--start= --end= --user=]  write <本地|-> <远端> [--append]  get <远端> <本地>
         \\  put <本地|-> <远端> [--overwrite]    fs-tree-put <tar|-> <目录> [--user= --json]
-        \\  ls [路径] / tree [路径] / stat <路径> / mkdir <路径> / rm <路径> [--user=]
-        \\  cp|mv <源> <目标>    edit <路径> (--old= --new= | --insert= --text=)
-        \\  grep <路径> <正则>    search <路径> <glob>
+        \\  ls [路径] [--recursive --hidden --depth=] / tree [路径] [--tar|--out=] / stat / mkdir / rm [--recursive]
+        \\  cp|mv <源> <目标> [--overwrite]   edit <路径> (--old= --new= [--replace-all|-first|-last] | --insert= --text=)
+        \\  grep <路径> <正则> [--fixed --ignore-case --include= --exclude= --context= --max=]   search <路径> <glob>
         \\
         \\【终端 PTY】
         \\  pty-new <id> [--cwd= --cols= --rows= --retention=]   pty <id> <命令…> [--timeout= --async]
         \\  pty-screen <id>   pty-input <id> <文本> [--enter]   pty-signal <id> [信号]
-        \\  pty-resize <id> [--cols= --rows=]   pty-ls   pty-rm <id>
+        \\  pty-resize <id> [--cols= --rows=]   pty-ls   pty-info <id>   pty-rm <id>
         \\  pty-ws <id> [--send= --max= --raw]      pty-ws-anon [--max=]
         \\
         \\【代码解释器】
         \\  code <源码…> [--lang= --session= --timeout=]   code-info
-        \\  code-sess-new [--lang=] / code-sess-ls / code-sess-rm <id>
+        \\  code-sess-new [--lang=] / code-sess-ls / code-sess-get <id> / code-sess-rm <id>
         \\【浏览器】（需 aio-daemon / aio-browser 镜像）
         \\  br-info / br-tabs / br-network / br-snapshot [--interactive] / br-cookies [--url=]
         \\  br-go <url> [--wait= --timeout=]    br-shot <out.png> [--full --quality=]
         \\  br-eval <表达式>    br-click|br-fill --selector= [--value=]    br-config [--json=JSON]
         \\  br-tab-new [--url=] / br-tab-use <id> / br-tab-close <id>
-        \\  br-cookie-set --name= --value= [--url= --domain=]    br-cdp <方法> [--params=JSON]
+        \\  br-cookie-set --name= --value= [--url= --domain=]   br-cookie-rm [--all|--name= --url= --domain=]
+        \\  br-upload --paths=<沙箱内文件,…> [--selector=|--ref=]   br-cdp <方法> [--params=JSON]
         \\
         \\【监听 / MCP】
-        \\  watch [路径] [--recursive --debounce=]   watch-poll <id>   watch-rm <id>
+        \\  watch [路径] [--recursive --debounce=]   watch-poll <id> [--cursor= --limit= --timeout=]   watch-ls / watch-rm <id>
         \\  watch-events <id> [--max= --json]
         \\  mcp <initialize|tools/list|tools/call|ping> [--params=JSON]
         \\

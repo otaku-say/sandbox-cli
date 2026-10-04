@@ -127,6 +127,7 @@ aio-cli pty-ws -h         # 同上
   - [`pty-signal`](#ptysignal) —— 给 PTY 会话发信号
   - [`pty-resize`](#ptyresize) —— 调整 PTY 终端尺寸
   - [`pty-ls`](#ptyls) —— 列出 PTY 会话
+  - [`pty-info`](#ptyinfo) —— 看单个 PTY 会话详情
   - [`pty-rm`](#ptyrm) —— 删除 PTY 会话
   - [`pty-ws`](#ptyws) —— WebSocket 附着到 PTY 会话（非交互）
   - [`pty-ws-anon`](#ptywsanon) —— 匿名 WebShell 附着
@@ -135,6 +136,7 @@ aio-cli pty-ws -h         # 同上
   - [`code-info`](#codeinfo) —— 代码解释器信息（GET /v2/code/info）
   - [`code-sess-new`](#codesessnew) —— 新建代码会话
   - [`code-sess-ls`](#codesessls) —— 列出代码会话
+  - [`code-sess-get`](#codesessget) —— 看单个代码会话详情
   - [`code-sess-rm`](#codesessrm) —— 删除代码会话
 - **浏览器**
   - [`br-info`](#brinfo) —— 浏览器信息（GET /v2/browser/info）
@@ -150,6 +152,8 @@ aio-cli pty-ws -h         # 同上
   - [`br-tab-close`](#brtabclose) —— 关闭标签页
   - [`br-cookies`](#brcookies) —— 读 Cookie
   - [`br-cookie-set`](#brcookieset) —— 写 Cookie
+  - [`br-cookie-rm`](#brcookierm) —— 删 Cookie（DELETE /v2/browser/cookies）
+  - [`br-upload`](#brupload) —— 往 <input type=file> 挂文件（沙箱内路径）
   - [`br-network`](#brnetwork) —— 抓网络请求列表
   - [`br-config`](#brconfig) —— 读/写浏览器配置（分辨率等）
   - [`br-cdp`](#brcdp) —— 直接发一条 CDP 命令
@@ -158,6 +162,7 @@ aio-cli pty-ws -h         # 同上
   - [`watch-poll`](#watchpoll) —— 长轮询取监听事件
   - [`watch-events`](#watchevents) —— SSE 事件流（--max 收满退出）
   - [`watch-rm`](#watchrm) —— 删除监听器
+  - [`watch-ls`](#watchls) —— 列出所有监听器
 - **MCP**
   - [`mcp`](#mcp) —— MCP Hub JSON-RPC 透传
 - **桌面**
@@ -254,23 +259,28 @@ aio-cli exec —— 同步执行一条命令并打印输出
 用途:  POST /v2/commands（mode 缺省同步）。响应扁平，直接打印 stdout/stderr，
        非 0 退出码时补一行「（exit N）」。
 用法:  aio-cli exec <命令> [参数…] [--cwd=<目录>] [--shell=<壳>] [--user=<用户>]
-                      [--session=<会话id>] [--timeout=<毫秒>] [--max-output=<字节>]
+                      [--session=<会话id>] [--env=K=V,K2=V2] [--timeout=<毫秒>]
+                      [--hard-timeout=<秒>] [--args='["a","b"]'] [--max-output=<字节>]
        aio-cli exec --id=<command_id> [--offset=<字节>] [--stderr-offset=<字节>]
+                      [--wait] [--wait-timeout=<秒>]
 参数:  <命令> [参数…]  位置参数用空格拼成一条命令（不用自己转义引号）。
        --cwd=        工作目录。
-       --shell=      指定 shell。
+       --shell=      指定 shell（auto|bash|sh|powershell|cmd|none）。
        --user=       以指定用户执行。
        --session=    在已有命令会话里执行。
+       --env=        环境变量，K=V 逗号分隔 → JSON 对象（同名后者覆盖）。
        --timeout=    毫秒；到点返回 status=running，进程还在跑（自己 kill）。
+       --hard-timeout=  秒；到点服务端强杀（返回 timed_out）。
+       --args=       JSON 数组；仅 shell=none 时合法（argv 形式运行）。
        --max-output= 截断输出上限。
        --id=         改成「按 id 回读」模式，不带位置参数。
        --offset= / --stderr-offset=   回读时的字节偏移（增量取输出）。
+       --wait / --wait-timeout=      回读时服务端等待至多 N 秒直到有输出/终态。
 示例:  aio-cli exec 'echo hello'
+       aio-cli exec 'echo $A' --env=A=B,C=D
        aio-cli exec 'zig build -Doptimize=ReleaseFast' --cwd=/root/repo --timeout=600000
-       aio-cli exec 'python3 -c "import sys;print(sys.version)"'
        ID=$(aio-cli async 'sleep 60'); aio-cli exec --id=$ID --offset=0
-注意:  源码注释里出现过 `--env=`、`--wait`、`--wait-timeout`，**当前并未实现**。
-       非 2xx 或 success=false → 打印 HTTP <码>: <message>，退出码非 0。
+注意:  非 2xx 或 success=false → 打印 HTTP <码>: <message>，退出码非 0。
 ```
 
 ### async
@@ -280,8 +290,8 @@ aio-cli async —— 异步派发一条命令，打印 command_id
 分组: 执行
 
 用途:  同 exec，但 mode=async，立即返回 command_id。
-用法:  aio-cli async <命令> [参数…] [--cwd=] [--shell=] [--user=] [--session=] [--timeout=] [--max-output=]
-参数:  同 exec（除 --id / --offset 系列）。
+用法:  aio-cli async <命令> [参数…] [--cwd=] [--shell=] [--user=] [--session=] [--env=K=V,K2=V2] [--timeout=] [--hard-timeout=] [--args=] [--max-output=]
+参数:  同 exec（除 --id / --offset / --wait 系列）。
 示例:  ID=$(aio-cli async 'pip install pandas && python3 -c "print(1+1)"')
        aio-cli log "$ID" --follow
        aio-cli kill "$ID"
@@ -333,9 +343,11 @@ aio-cli sess-new —— 新建命令会话（固定 cwd）
 分组: 执行
 
 用途:  POST /v2/commands/sessions。
-用法:  aio-cli sess-new <会话id> [--cwd=<目录>]
+用法:  aio-cli sess-new <会话id> [--cwd=<目录>] [--env=K=V,K2=V2] [--user=<用户>]
 参数:  --cwd=   会话内固定的工作目录。
-示例:  aio-cli sess-new work --cwd=/root/repo
+       --env=   会话级环境变量（K=V 逗号分隔 → JSON 对象，同名后者覆盖）。
+       --user=  以指定用户跑会话命令。
+示例:  aio-cli sess-new work --cwd=/root/repo --env=FOO=bar
 注意:  cwd 在创建时固定；会话内 `cd` 不跨调用保留。
 ```
 
@@ -385,11 +397,12 @@ aio-cli cat —— 读沙箱内文件到标准输出
 分组: 文件
 
 用途:  GET /v2/fs/read?path=…，取 data.content 原样打到 stdout。
-用法:  aio-cli cat <远端路径> [--user=<用户>]
+用法:  aio-cli cat <远端路径> [--start=<行>] [--end=<行>] [--user=<用户>]
        （`aio-cli read ...` 是同义词）
 参数:  --user=   以指定用户身份读。
+       --start= / --end=   行区间（0 起；end 不含尾行）。
 示例:  aio-cli cat /etc/hostname
-       aio-cli cat /tmp/data.csv > data.csv
+       aio-cli cat /tmp/data.csv --start=0 --end=10 > data.csv
 ```
 
 ### write
@@ -399,10 +412,14 @@ aio-cli write —— 把本地文件（或 stdin）写进沙箱
 分组: 文件
 
 用途:  POST /v2/fs/write，JSON 传 content（**按文本处理，非二进制安全**）。
-用法:  aio-cli write <本地文件|-> <远端路径>
+用法:  aio-cli write <本地文件|-> <远端路径> [--append] [--encoding=utf-8|base64|raw]
+                      [--leading-newline] [--trailing-newline]
 参数:  <本地文件|->  `-` 表示从 stdin 读（上限 4 MiB）。
+       --append       追加到文件末尾而非覆盖。
+       --encoding=    内容编码：utf-8（默认）/ base64 / raw。
+       --leading-newline / --trailing-newline  写入前/后补一个换行。
 示例:  aio-cli write ./data.csv /home/gem/data.csv
-       echo hi | aio-cli write - /tmp/hi.txt
+       echo hi | aio-cli write - /tmp/hi.txt --append
 注意:  二进制文件请用 `put`（multipart）或 `fs-tree-put`（tar）。
 ```
 
@@ -455,11 +472,15 @@ aio-cli fs-tree-put —— 整棵目录树上传（tar）
 aio-cli ls —— 列目录
 分组: 文件
 
-用途:  GET /v2/fs/list?path=…。
-用法:  aio-cli ls [远端路径] [--user=<用户>]
+用途:  GET /v2/fs/list?path=…，透传递归/隐藏/深度参数。
+用法:  aio-cli ls [远端路径] [--recursive] [--hidden] [--depth=<层>] [--user=<用户>]
 参数:  [远端路径]  缺省为 /。
+       --recursive  递归列出子目录。
+       --hidden     显示隐藏文件（. 开头）。
+       --depth=     最大深度（配合 --recursive）。
 示例:  aio-cli ls /home/gem
-注意:  不递归（要树看 `aio-cli tree`）。
+       aio-cli ls /root/repo --recursive --depth=1
+注意:  --depth <= 1 时输出与默认不同（服务端含嵌套条目）。
 ```
 
 ### stat
@@ -479,11 +500,14 @@ aio-cli stat —— 看文件/目录元信息
 aio-cli tree —— 递归列目录树
 分组: 文件
 
-用途:  GET /v2/fs/tree?path=…，递归展开。
-用法:  aio-cli tree [远端路径] [--user=<用户>]
+用途:  GET /v2/fs/tree?path=…，服务端返回的是原始 tar（x-tar）字节流。
+用法:  aio-cli tree [远端路径] [--user=<用户>] [--tar | --out=<本地文件>]
 参数:  [远端路径]  缺省为 /。
+       --tar   原样输出 tar 字节（可管道给 tar tf -）。
+       --out=  把 tar 存到本地文件。
 示例:  aio-cli tree /root/repo
-注意:  没有 `--depth=` / `--hidden=` 选项（源码未实现），深度由服务端决定。
+       aio-cli tree /root/repo --out=repo.tar && tar tf repo.tar | head
+注意:  默认输出是**解析后的条目树**（缩进表示层级）；旧版直接刷二进制。
 ```
 
 ### mkdir
@@ -504,10 +528,11 @@ aio-cli mkdir —— 建目录
 aio-cli rm —— 删除文件/目录
 分组: 文件
 
-用途:  POST /v2/fs/delete。**不递归**。
-用法:  aio-cli rm <远端路径>
+用途:  POST /v2/fs/delete。
+用法:  aio-cli rm <远端路径> [--recursive]
+参数:  --recursive  递归删除非空目录（服务端默认仅删文件/空目录）。
 示例:  aio-cli rm /tmp/out
-注意:  非空目录删不掉；整树删除用 `aio-cli exec 'rm -rf ...'`。
+       aio-cli rm /tmp/out --recursive
 ```
 
 ### cp
@@ -517,9 +542,10 @@ aio-cli cp —— 复制
 分组: 文件
 
 用途:  POST /v2/fs/copy。
-用法:  aio-cli cp <源> <目标>
+用法:  aio-cli cp <源> <目标> [--overwrite]
+参数:  --overwrite  目标已存在时覆盖。
 示例:  aio-cli cp /tmp/a.txt /tmp/b.txt
-注意:  目标已存在时不会自动覆盖（需要先 rm）。
+       aio-cli cp /tmp/a.txt /tmp/b.txt --overwrite
 ```
 
 ### mv
@@ -529,9 +555,10 @@ aio-cli mv —— 移动/改名
 分组: 文件
 
 用途:  POST /v2/fs/move。
-用法:  aio-cli mv <源> <目标>
+用法:  aio-cli mv <源> <目标> [--overwrite]
+参数:  --overwrite  目标已存在时覆盖。
 示例:  aio-cli mv /tmp/a.txt /tmp/b.txt
-注意:  同名目标已存在时会失败。
+       aio-cli mv /tmp/a.txt /tmp/b.txt --overwrite
 ```
 
 ### edit
@@ -542,12 +569,17 @@ aio-cli edit —— 按行改文件（替换 / 插入）
 
 用途:  POST /v2/fs/edit。
 用法:  aio-cli edit <远端路径> --old=<原串> --new=<新串>
+                      [--replace-all | --replace-first | --replace-last]
        aio-cli edit <远端路径> --insert=<行号> --text=<文本>
 参数:  --old= --new=   str_replace 模式；--new 缺省为空串（等于删除该串）。
+       --replace-all   多处匹配全部替换（replace_mode=ALL）。
+       --replace-first 只替换第一处（replace_mode=FIRST）。
+       --replace-last  只替换最后一处（replace_mode=LAST）。
        --insert= --text=  insert 模式，--insert 是行号。
 示例:  aio-cli edit /root/app.py --old='v1' --new='v2'
+       aio-cli edit /root/app.py --old='x' --new='y' --replace-all
        aio-cli edit /root/app.py --insert=0 --text='import os'
-注意:  没有 `--replace-all` 选项（源码未实现）。
+注意:  多处匹配而不给 replace_mode 时服务端 400（必须显式三选一）。
 ```
 
 ### grep
@@ -556,11 +588,18 @@ aio-cli edit —— 按行改文件（替换 / 插入）
 aio-cli grep —— 在沙箱内按正则搜文件内容
 分组: 文件
 
-用途:  POST /v2/fs/grep，固定 recursive=true。
-用法:  aio-cli grep <远端路径> <正则>
-参数:  <远端路径> <正则>  两个位置参数，均必填。
-示例:  aio-cli grep /root/repo 'fn main'
-注意:  没有 --fixed / --ignore-case / --include / --max 选项（源码未实现）。
+用途:  POST /v2/fs/grep（固定 recursive=true）。
+用法:  aio-cli grep <远端路径> <正则> [--fixed] [--ignore-case] [--multiline]
+                      [--include=a,b] [--exclude=a,b] [--context=<行>]
+                      [--max=<条>] [--offset=<条>] [--type=<类型>]
+参数:  --fixed        按字面串搜（fixed_strings=true）。
+       --ignore-case  忽略大小写（case_insensitive=true）。
+       --include= / --exclude=   文件名通配数组（逗号分隔）。
+       --context=     前后各 N 行上下文。
+       --multiline    跨行匹配。
+       --max= / --offset=        结果条数上限 / 偏移。
+       --type=        文件类型过滤（如 py、rust）。
+示例:  aio-cli grep /root/repo 'fn main' --include='*.zig' --max=20
 ```
 
 ### search
@@ -664,6 +703,17 @@ aio-cli pty-ls —— 列出 PTY 会话
 示例:  aio-cli pty-ls
 ```
 
+### pty-info
+
+```text
+aio-cli pty-info —— 看单个 PTY 会话详情
+分组: 终端 PTY
+
+用途:  GET /v2/pty/sessions/<id>。
+用法:  aio-cli pty-info <会话id>
+示例:  aio-cli pty-info t1
+```
+
 ### pty-rm
 
 ```text
@@ -758,6 +808,17 @@ aio-cli code-sess-ls —— 列出代码会话
 示例:  aio-cli code-sess-ls
 ```
 
+### code-sess-get
+
+```text
+aio-cli code-sess-get —— 看单个代码会话详情
+分组: 代码
+
+用途:  GET /v2/code/sessions/<id>。
+用法:  aio-cli code-sess-get <会话id>
+示例:  aio-cli code-sess-get cs_abc123
+```
+
 ### code-sess-rm
 
 ```text
@@ -820,11 +881,11 @@ aio-cli br-eval —— 在页面里执行 JS 表达式
 分组: 浏览器
 
 用途:  POST /v2/browser/evaluate。
-用法:  aio-cli br-eval <JS 表达式…>
+用法:  aio-cli br-eval <JS 表达式…> [--await]
 参数:  位置参数用空格拼成表达式；不需要引号。
+       --await  等待返回的 Promise（await_promise=true）。
 示例:  aio-cli br-eval 'document.title'
-       aio-cli br-eval 'Array.from(document.querySelectorAll("a")).length'
-注意:  源码注释提到 `--await`，**当前未实现**（Promise 结果不会自动等待）。
+       aio-cli br-eval 'fetch("/api").then(r => r.text())' --await
 ```
 
 ### br-click
@@ -861,7 +922,7 @@ aio-cli br-snapshot —— 抓页面可访问性快照
 
 用途:  POST /v2/browser/snapshot。
 用法:  aio-cli br-snapshot [--interactive]
-参数:  --interactive  interactive=true，只要可交互节点。
+参数:  --interactive  interactive_only=true，只要可交互节点。
 示例:  aio-cli br-snapshot
        aio-cli br-snapshot --interactive
 ```
@@ -932,10 +993,38 @@ aio-cli br-cookies —— 读 Cookie
 aio-cli br-cookie-set —— 写 Cookie
 分组: 浏览器
 
-用途:  POST /v2/browser/cookies。
+用途:  POST /v2/browser/cookies（发 {"cookies":[…]} 包装体）。
 用法:  aio-cli br-cookie-set --name=<名> --value=<值> [--url=<url>] [--domain=<域>]
 参数:  --name=  必填；--value= 默认空串；--url= / --domain= 可选。
 示例:  aio-cli br-cookie-set --name=token --value=abc --domain=example.com
+```
+
+### br-cookie-rm
+
+```text
+aio-cli br-cookie-rm —— 删 Cookie（DELETE /v2/browser/cookies）
+分组: 浏览器
+
+用途:  DELETE /v2/browser/cookies。
+用法:  aio-cli br-cookie-rm [--all | --name=<名> | --url=<url> | --domain=<域>]
+参数:  至少给一个条件；--all 清全部。
+示例:  aio-cli br-cookie-rm --name=token
+       aio-cli br-cookie-rm --all
+```
+
+### br-upload
+
+```text
+aio-cli br-upload —— 往 <input type=file> 挂文件（沙箱内路径）
+分组: 浏览器
+
+用途:  POST /v2/browser/upload，把**沙箱内**文件挂给页面上传控件。
+用法:  aio-cli br-upload --paths=<沙箱内文件,…> [--selector=<css> | --ref=<快照ref>] [--tab=<id>]
+参数:  --paths=   逗号分隔的沙箱内绝对路径（必填）。
+       --selector=  目标 <input type=file> 的 CSS 选择器。
+       --ref=       或者用快照元素 ref。
+示例:  aio-cli br-upload --paths=/tmp/a.png --selector='#file-input'
+注意:  文件必须先存在于沙箱里（用 write / put 先放进去）。
 ```
 
 ### br-network
@@ -1005,11 +1094,15 @@ aio-cli watch —— 创建文件监听器
 aio-cli watch-poll —— 长轮询取监听事件
 分组: 监听
 
-用途:  GET /v2/watch/<id>（服务端长轮询）。
-用法:  aio-cli watch-poll <watcher_id>
+用途:  GET /v2/watch/<id>/poll（服务端长轮询）。
+用法:  aio-cli watch-poll <watcher_id> [--cursor=<游标>] [--limit=<条数>] [--timeout=<秒>]
 参数:  <watcher_id>  位置参数，必填。
+       --cursor=     从上次返回的 cursor 继续（缺省 0）。
+       --limit=      单次最多返回条数。
+       --timeout=    最长等待秒数（长轮询）。
 示例:  aio-cli watch-poll "$W"
-注意:  没有 `--cursor=` / `--timeout=` / `--limit=` 选项（源码未实现）。
+       aio-cli watch-poll "$W" --cursor=5 --limit=10 --timeout=30
+注意:  响应含 cursor/events/overflow；用返回的 cursor 作为下次 --cursor。
 ```
 
 ### watch-events
@@ -1036,7 +1129,19 @@ aio-cli watch-rm —— 删除监听器
 用法:  aio-cli watch-rm <watcher_id>
 参数:  <watcher_id>  位置参数，必填。
 示例:  aio-cli watch-rm "$W"
-注意:  没有 `watch-ls` 命令（源码未实现），ID 要自己留好。
+注意:  删除前可用 `watch-ls` 列出现有监听器。
+```
+
+### watch-ls
+
+```text
+aio-cli watch-ls —— 列出所有监听器
+分组: 监听
+
+用途:  GET /v2/watch，输出原始 JSON。
+用法:  aio-cli watch-ls
+参数:  无。
+示例:  aio-cli watch-ls
 ```
 
 ## MCP
