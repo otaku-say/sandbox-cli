@@ -1,0 +1,43 @@
+name: 发布 CLI 后通知技能仓库
+
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 发送技能仓库更新事件
+        shell: bash
+        env:
+          TARGET_TOKEN: ${{ secrets.SKILLS_REPOSITORY_DISPATCH_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TARGET_TOKEN:-}" ]; then
+            echo '::warning::请在 sandbox-cli 仓库添加 SKILLS_REPOSITORY_DISPATCH_TOKEN Secret。'
+            echo '未派发：缺少 SKILLS_REPOSITORY_DISPATCH_TOKEN Secret。' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          payload="$(jq -cn \
+            --arg source_repo 'otaku-say/sandbox-cli' \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg source_run_id "$SOURCE_RUN_ID" \
+            '{event_type:"sandbox-cli-release",client_payload:{source_repo:$source_repo,source_sha:$source_sha,source_run_id:$source_run_id}}')"
+
+          curl --fail-with-body --silent --show-error --retry 3 \
+            -X POST \
+            -H "Authorization: Bearer $TARGET_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/repos/otaku-say/skills/dispatches \
+            -d "$payload"
+          echo '已向 skills 仓库发送二进制同步事件。' >> "$GITHUB_STEP_SUMMARY"
