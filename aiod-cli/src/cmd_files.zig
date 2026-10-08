@@ -288,6 +288,22 @@ fn cmdPut(c: *Ctx, a: util.Args) !void {
     if (std.mem.lastIndexOfScalar(u8, local, '/')) |i| fname = local[i + 1 ..];
     if (std.mem.eql(u8, fname, "-")) fname = "stdin.bin";
 
+    // 预检查：目标已存在时自动加 --overwrite，避免 move 失败导致临时文件残留
+    var need_overwrite = a.has("overwrite");
+    if (!need_overwrite) {
+        var stat_w = std.Io.Writer.fixed(try c.arena.alloc(u8, 1024));
+        try stat_w.print("/v2/fs/stat?path={s}", .{try urlEncode(c.arena, remote)});
+        if (a.get("user")) |u| try stat_w.print("&user={s}", .{try urlEncode(c.arena, u)});
+        const stat_buf = try c.arena.alloc(u8, BUF);
+        const stat_res = httpc.get(c.client, try c.url(stat_w.buffered()), try auth(c), stat_buf) catch null;
+        if (stat_res) |sr| {
+            if (sr.ok()) {
+                std.debug.print("目标已存在，自动启用 --overwrite\n", .{});
+                need_overwrite = true;
+            }
+        }
+    }
+
     const boundary = "ZigAioCliBoundary7f3a9c";
     var w = std.Io.Writer.fixed(try c.arena.alloc(u8, data.len + 4096));
     try w.print("--{s}\r\n", .{boundary});
@@ -319,7 +335,7 @@ fn cmdPut(c: *Ctx, a: util.Args) !void {
         return error.NoFilePath;
     };
 
-    const mv = if (a.has("overwrite"))
+    const mv = if (need_overwrite)
         try std.fmt.allocPrint(c.arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\",\"overwrite\":true}}", .{
             try util.jsonEscape(c.arena, tmp), try util.jsonEscape(c.arena, remote),
         })
@@ -329,7 +345,15 @@ fn cmdPut(c: *Ctx, a: util.Args) !void {
         });
     const buf2 = try c.arena.alloc(u8, BUF);
     const mres = try httpc.postJson(c.client, try c.url("/v2/fs/move"), try jsonAuth(c), mv, buf2);
-    if (!mres.ok()) return fail(c, mres);
+    if (!mres.ok()) {
+        // move 失败时清理临时文件，避免残留
+        const cleanup = try std.fmt.allocPrint(c.arena, "{{\"path\":\"{s}\"}}", .{
+            try util.jsonEscape(c.arena, tmp),
+        });
+        const buf3 = try c.arena.alloc(u8, BUF);
+        _ = httpc.postJson(c.client, try c.url("/v2/fs/delete"), try jsonAuth(c), cleanup, buf3) catch {};
+        return fail(c, mres);
+    }
     try c.out.print("已上传 {s} -> {s}（{d} 字节）\n", .{ local, remote, data.len });
 }
 
