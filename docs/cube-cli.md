@@ -118,12 +118,24 @@ cube-cli new -h            # 同上
   - [`mkdir`](#mkdir) —— 在沙箱内建目录
   - [`rm-file`](#rmfile) —— 删除沙箱内文件/目录
   - [`mv`](#mv) —— 移动/改名沙箱内文件
+  - [`exists`](#exists) —— 判断沙箱内路径是否存在（true/false）
+  - [`watch-dir`](#watchdir) —— 观察沙箱内目录变更流（限时）（同义词 `watch_dir`）
 - **诊断 / 其它**
   - [`health`](#health) —— 控制面健康检查
   - [`version`](#version) —— 版本 / 构建信息
   - [`help`](#help) —— 帮助：默认速查表 / all 完整表 / <命令> 详情
   - [`logs`](#logs) —— 沙箱日志（启动 / 运行；排障首选）
   - [`raw`](#raw) —— 任意控制面 API 透传（未覆盖端点的兜底）
+- **进程 / PTY**
+  - [`exec-async`](#execasync) —— 后台启动命令（读到 pid 即返回，进程继续跑）
+  - [`exec-logs`](#execlogs) —— 增量拉取异步进程的输出
+  - [`exec-kill`](#execkill) —— 给异步进程发信号（默认 SIGKILL）
+  - [`exec-stdin`](#execstdin) —— 给异步进程送 stdin 输入
+  - [`pty-open`](#ptyopen) —— 开一个持久 PTY 会话（script 记录全过程）
+  - [`pty-write`](#ptywrite) —— 向 PTY 会话送输入（SendInput pty）
+  - [`pty-read`](#ptyread) —— 读 PTY 会话记录（按偏移增量）
+  - [`pty-close`](#ptyclose) —— 结束 PTY 会话
+  - [`pty-resize`](#ptyresize) —— 调整 PTY 窗口大小
 
 ## 沙箱
 
@@ -137,6 +149,8 @@ cube-cli new —— 建沙箱（默认 aio-code 镜像）
        （也就是 aiod-cli 的 SANDBOX_BASE）。
 用法:  cube-cli new [--need=code|browser|desktop] [--template=<模板ID>]
                       [--timeout=<秒>] [--note=<名称>] [--agent=<谁>] [--task=<做什么>]
+                      [--env=K=V] [--volume=卷名[:挂载路径]] [--lifecycle=kill|pause]
+                      [--auto-resume] [--no-internet] [--distribution-scope=节点,IP]
 参数:  --need=      需要的能力，默认 code。不带任何参数就是 aio-code 镜像（自带 Zig 工具链）
                     browser / desktop 分别对应 aio-daemon / aio-computer 镜像。
        --template=  直接指定模板：先查服务端别名（与 tpl-resolve 同接口），命中即用；
@@ -146,6 +160,11 @@ cube-cli new —— 建沙箱（默认 aio-code 镜像）
        --note=      显示名（ls 的"备注"列）。不给时按 "<agent> · <task>" 生成。
        --agent=     谁开的；缺省读环境变量 CUBESANDBOX_AGENT_NAME，再缺省为 cube-cli。
        --task=      做什么，进 metadata.task，admin WebUI 会渲染。
+       --env=       K=V 注入沙箱进程环境（可重复）→ envVars。
+       --volume=    挂持久卷：`卷名` 或 `卷名:挂载路径`（默认 /mnt/卷名）→ volumeMounts。
+       --lifecycle= kill（默认）或 pause（空闲挂起，可配合 --auto-resume 随用随起）。
+       --no-internet  禁止出网（allow_internet_access=false，与 SDK/e2b 同名）。
+       --distribution-scope=  逗号分隔的节点 ID / 主机 IP，限定调度范围。
 示例:  cube-cli new --note=build --agent=ci --task="跑 Zig 构建"
        cube-cli new --need=browser --timeout=1800
 注意:  `--need=` 是动态挑模板（能力覆盖 + 更薄者优先）；没有满足的 READY 模板会
@@ -186,13 +205,15 @@ cube-cli exec —— 在沙箱内执行命令
 分组: 沙箱
 
 用途:  走沙箱内 envd（49983）执行一条命令并打印 stdout/stderr/exit。
-用法:  cube-cli exec <sandboxID> <命令...> [--cwd=<目录>] [--env=NAME|KEY=VAL] [--timeout=<秒>]
+用法:  cube-cli exec <sandboxID> <命令...> [--cwd=<目录>] [--env=NAME|KEY=VAL] [--timeout=<秒>] [--user=<用户>]
 参数:  <sandboxID>  目标沙箱。
        <命令...>    位置参数会原样用空格拼回一条命令（无需自己转义引号）。
        --cwd=       工作目录。
        --env=       K=V 直接给值；只给 NAME 则从**本机环境**读同名变量注入
                     （敏感值不必出现在命令行 / 进程列表里）。
-       --timeout=   秒，默认 60。
+       --timeout=   秒；缺省不设截止（同 SDK run(timeout=None)）。给值则作为
+                    envd 硬截止（Connect-Timeout-Ms），到点进程被取消。
+       --user=      以指定用户身份执行（envd Basic 作用域；默认 root）。
 示例:  cube-cli exec $SID 'zig version'
        cube-cli exec $SID 'python3 -c "print(1+1)"' --cwd=/tmp --timeout=300
        cube-cli exec $SID 'printenv' --env=GITHUB_TOKEN
@@ -205,16 +226,25 @@ cube-cli exec —— 在沙箱内执行命令
 cube-cli code —— 用解释器在沙箱内跑一段代码
 分组: 沙箱
 
-用途:  把一段源码交给解释器执行（内部等价于 exec python3 -c ...），不依赖 Jupyter 内核，
-       任何镜像都可用。
-用法:  cube-cli code <sandboxID> <代码...> [--lang=python|js|bash] [--timeout=<秒>] [--env=...]
+用途:  两种通道：interp（默认）= 把源码交给解释器跑（等价 exec python3 -c ...，
+       任何镜像可用）；kernel = SDK run_code 的通道，POST <proxy>/sandbox/<sid>/49999/execute
+       （E2B 代码解释器 ndjson：stdout/stderr/result/error）。kernel 需要镜像
+       内置 49999 解释器服务（环境依赖，见下）；aio-default v5 未内置，
+       普通执行请用 interp（默认）或 exec。
+用法:  cube-cli code <sandboxID> <代码...> [--mode=interp|kernel] [--lang=python|js|bash] [--timeout=<秒>] [--env=...] [--user=]
 参数:  <代码...>    位置参数用空格拼接后整体交给解释器。
+       --mode=      interp（默认，任何镜像可用）或 kernel（需要镜像监听
+                  并对外暴露 49999；缺失时报 HTTP 502，不是 CLI 缺陷）。
        --lang=      python（默认）/ js（js、javascript、node、nodejs）/ bash（sh、shell）。
-       --timeout=   秒，默认 120。
-       --env=       同 exec。
+       --timeout=   秒；缺省不设截止（同 SDK run_code(timeout=None)）。
+       --env= / --user=  同 exec。
 示例:  cube-cli code $SID 'print(sum(range(10)))'
        cube-cli code $SID 'console.log(1+1)' --lang=js
+       cube-cli code $SID 'print(1+1)' --mode=kernel
 注意:  语言别名与非法语言：非法值会打印「不支持的语言: xxx」并以非 0 退出。
+       kernel 模式的 result 事件里 html/svg/png 等非文本格式只报大小、不展开。
+       kernel 502 排查：cube-cli ports <SID> 看 49999 是否监听且绑定 0.0.0.0；
+       未监听 = 镜像未内置该服务，改用 --mode=interp 或 exec。
 ```
 
 ### ports
@@ -239,9 +269,13 @@ cube-cli info —— 沙箱详情（规格 / 元数据 / 卷挂载 / 截止时�
 分组: 沙箱
 
 用途:  查看单个沙箱完整状态：state、CPU/内存/磁盘、起止时间、metadata、volumeMounts、domain。
-用法:  cube-cli info <sandboxID> [--json] [--wait=<状态>] [--timeout=<秒>]
+用法:  cube-cli info <sandboxID> [--json] [--wait=<状态>] [--timeout=<秒>] [--host[=端口]]
 参数:  --json 原样输出；--wait= 轮询到指定状态（如 running）；--timeout= 最大等待秒数。
+       --host[=端口]  打印 domain 与 SDK get_host(端口) 的虚拟域名（排障对照上游文档）：
+                      `--host` 打印 domain + envd 的 49983 虚拟域名；`--host=49999` 只打印
+                      `<端口>-<沙箱ID>.<域名>`。本部署无该域名解析，数据面走 proxy 路径路由。
 示例:  cube-cli info 6f1a... --json
+       cube-cli info 6f1a... --host=49999
 注意:  上游详情不含网络策略（改策略用 net 命令）。
 ```
 
@@ -762,6 +796,33 @@ cube-cli mv —— 移动/改名沙箱内文件
 示例:  cube-cli mv $SID /tmp/a.txt /tmp/b.txt
 ```
 
+### exists
+
+```text
+cube-cli exists —— 判断沙箱内路径是否存在（true/false）
+分组: 文件
+
+用途:  Filesystem.Stat 的布尔封装（对齐 SDK files.exists）。
+用法:  cube-cli exists <sandboxID> <远端路径> [--user=<用户>]
+输出:  存在 → true（退出码 0）；不存在 → false（退出码 1，便于脚本判断）。
+示例:  cube-cli exists $SID /etc/hostname && echo ok
+```
+
+### watch-dir
+
+```text
+cube-cli watch-dir —— 观察沙箱内目录变更流（限时）
+（同义词: watch_dir）
+分组: 文件
+
+用途:  envd Filesystem.WatchDir 流：观察目录里文件的新建 / 修改 / 删除 / 改名。
+用法:  cube-cli watch-dir <sandboxID> <远端目录> [--timeout=秒] [--json] [--user=<用户>]
+参数:  --timeout=  观察秒数（默认 10；超时由服务端 Connect-Timeout-Ms 控制）。
+       --json     每个事件输出原始 JSON（否则表格化：类型 + 文件名）。
+示例:  cube-cli watch-dir $SID /tmp --timeout=30
+注意:  只在监听的这段时间里收事件（不是常驻守护）；继续观察请重跑。
+```
+
 ## 诊断 / 其它
 
 ### health
@@ -832,5 +893,137 @@ cube-cli raw —— 任意控制面 API 透传（未覆盖端点的兜底）
 示例:  cube-cli raw GET /health
        cube-cli raw POST /sandboxes --body='{"templateID":"tpl-..."}'
 注意:  非 2xx 打印状态码与响应体，并以非 0 退出。
+```
+
+## 进程 / PTY
+
+### exec-async
+
+```text
+cube-cli exec-async —— 后台启动命令（读到 pid 即返回，进程继续跑）
+分组: 进程 / PTY
+
+用途:  走 envd process.Process/Start 启动一条命令，收到 start 事件里的 pid 就断开，
+       命令在沙箱里继续运行；stdout/stderr 落盘到 /tmp/.cube-cli-exec/<tag>.{out,err}。
+用法:  cube-cli exec-async <sandboxID> <命令...> [--cwd=] [--env=NAME|K=V] [--user=] [--timeout=秒] [--no-stdin]
+参数:  <命令...>   位置参数空格拼接为一条命令（交 /bin/bash -l -c 执行）。
+       --cwd=      工作目录；--env= 同 exec（K=V 或从本机环境读）。
+       --user=     执行身份（envd Basic 用户作用域，默认 root）。
+       --timeout=  给命令套 `timeout -k 5 <秒>`，到点自动结束。
+       --no-stdin  启动时不打开 stdin（默认打开，配合 exec-stdin 送输入）。
+示例:  cube-cli exec-async $SID 'pip install -r req.txt -q; echo done'
+       → 打印 pid 与日志路径；随后 exec-logs / exec-kill / exec-stdin 对 pid 操作。
+注意:  envd 断开后进程继续运行（实测）；输出无缓冲，靠本命令的落盘包装实现可回读。
+```
+
+### exec-logs
+
+```text
+cube-cli exec-logs —— 增量拉取异步进程的输出
+分组: 进程 / PTY
+
+用途:  读 exec-async 进程的输出文件（按字节偏移增量拉取），进程结束后给出退出码。
+用法:  cube-cli exec-logs <sandboxID> <pid> [--mode=stdout|stderr|both] [--offset=N] [--limit=N] [--follow]
+参数:  --offset=N  从第 N 字节开始读（默认 0；上次输出末尾会提示下一偏移）。
+       --limit=N   本次最多读 N 字节（默认不限）。
+       --mode=     只看 stdout / stderr 或两者（both 默认，stderr 段带 --- stderr --- 分隔）。
+       --follow    每 0.7 秒拉一次新内容，直到进程退出（或信号终止）为止。
+示例:  cube-cli exec-logs $SID 123 --follow
+       cube-cli exec-logs $SID 123 --offset=4096 --limit=65536
+注意:  必须由 exec-async 启动的 pid（元信息 /tmp/.cube-cli-exec/<pid>.meta）。
+```
+
+### exec-kill
+
+```text
+cube-cli exec-kill —— 给异步进程发信号（默认 SIGKILL）
+分组: 进程 / PTY
+
+用途:  envd process.Process/SendSignal。
+用法:  cube-cli exec-kill <sandboxID> <pid> [--sigterm]
+参数:  --sigterm  用 SIGTERM 代替默认的 SIGKILL。
+示例:  cube-cli exec-kill $SID 123
+注意:  进程不存在时提示「已不存在」并正常退出（幂等）。
+```
+
+### exec-stdin
+
+```text
+cube-cli exec-stdin —— 给异步进程送 stdin 输入
+分组: 进程 / PTY
+
+用途:  envd process.Process/SendInput（input.stdin）。
+用法:  cube-cli exec-stdin <sandboxID> <pid> <数据...>   （`-` = 从本机 stdin 读原始字节）
+示例:  cube-cli exec-stdin $SID 123 'hello'          # 无换行
+       printf 'line1\n' | cube-cli exec-stdin $SID 123 -
+注意:  仅对以 stdin 打开启动的进程有效（exec-async 默认打开；--no-stdin 的会报
+       "stdin not enabled or closed"）。
+```
+
+### pty-open
+
+```text
+cube-cli pty-open —— 开一个持久 PTY 会话（script 记录全过程）
+分组: 进程 / PTY
+
+用途:  在 PTY 里跑 `<shell> -i -l`，并用 script(1) 把整个会话记录到
+       /tmp/.cube-cli-pty/<tag>.log；返回 pid 后会话常驻（断开不影响）。
+用法:  cube-cli pty-open <sandboxID> [--rows=24] [--cols=80] [--shell=/bin/bash] [--cwd=] [--env=NAME|K=V] [--user=]
+参数:  --rows= / --cols=  PTY 窗口大小（pty-resize 可再调）。
+       --shell=  交互 shell（默认 /bin/bash）。
+示例:  cube-cli pty-open $SID          # → pid 123、日志路径
+       cube-cli pty-write $SID 123 'ls -la' --enter && cube-cli pty-read $SID 123 --follow
+注意:  依赖镜像内 /usr/bin/script（util-linux）；缺失时会话立即退出、日志为空。
+```
+
+### pty-write
+
+```text
+cube-cli pty-write —— 向 PTY 会话送输入（SendInput pty）
+分组: 进程 / PTY
+
+用法:  cube-cli pty-write <sandboxID> <pid> <数据...> [--enter]
+参数:  `-` 表示从本机 stdin 读原始字节（可送控制字符，如 Ctrl-C = \x03）。
+       --enter 在数据末尾补一个回车（\r），方便直接执行命令。
+示例:  cube-cli pty-write $SID 123 'echo hi' --enter
+```
+
+### pty-read
+
+```text
+cube-cli pty-read —— 读 PTY 会话记录（按偏移增量）
+分组: 进程 / PTY
+
+用法:  cube-cli pty-read <sandboxID> <pid> [--offset=N] [--limit=N] [--lines=N] [--follow] [--raw]
+参数:  --offset= 从第 N 字节开始（默认 0，即到目前全部内容）。
+       --lines=N 只看最后 N 行（tail 语义）。
+       --follow  持续跟随到会话结束。
+       --raw     保留 script(1) 的 "Script started on ..." 头（默认过滤）。
+示例:  cube-cli pty-read $SID 123 --lines=40
+       cube-cli pty-read $SID 123 --follow     # 相当于远程 tail -f
+注意:  输出是原始终端字节（含 ANSI 转义）。
+```
+
+### pty-close
+
+```text
+cube-cli pty-close —— 结束 PTY 会话
+分组: 进程 / PTY
+
+用法:  cube-cli pty-close <sandboxID> <pid> [--sigterm]
+参数:  --sigterm  用 SIGTERM 代替默认的 SIGKILL。
+示例:  cube-cli pty-close $SID 123
+注意:  会话记录文件保留在 /tmp/.cube-cli-pty/ 下。
+```
+
+### pty-resize
+
+```text
+cube-cli pty-resize —— 调整 PTY 窗口大小
+分组: 进程 / PTY
+
+用途:  envd process.Process/Update（pty.size）。
+用法:  cube-cli pty-resize <sandboxID> <pid> [--rows=24] [--cols=80]
+示例:  cube-cli pty-resize $SID 123 --rows=40 --cols=120
 ```
 

@@ -106,8 +106,8 @@ aiod-cli pty-ws -h         # 同上
 - **文件**
   - [`cat`](#cat) —— 读沙箱内文件到标准输出（同义词 `read`）
   - [`write`](#write) —— 把本地文件（或 stdin）写进沙箱
-  - [`get`](#get) —— 下载沙箱内文件到本地（二进制安全）
-  - [`put`](#put) —— 上传本地文件到沙箱（二进制安全）
+  - [`get`](#get) —— 下载沙箱内文件到本地（二进制安全，大文件分块）
+  - [`put`](#put) —— 上传本地文件到沙箱（二进制安全，大文件流式）
   - [`fs-tree-put`](#fstreeput) —— 整棵目录树上传（tar）
   - [`ls`](#ls) —— 列目录
   - [`stat`](#stat) —— 看文件/目录元信息
@@ -426,20 +426,24 @@ aiod-cli write —— 把本地文件（或 stdin）写进沙箱
 ### get
 
 ```text
-aiod-cli get —— 下载沙箱内文件到本地（二进制安全）
+aiod-cli get —— 下载沙箱内文件到本地（二进制安全，大文件分块）
 分组: 文件
 
 用途:  GET /v2/fs/download?path=…，响应体原样落本地。
-用法:  aiod-cli get <远端路径> <本地文件> [--user=<用户>]
-参数:  --user=   以指定用户身份读。
+用法:  aiod-cli get <远端路径> <本地文件> [--user=<用户>] [--chunk=<字节>] [--no-range]
+参数:  --user=      以指定用户身份读。
+       --chunk=     分块大小（字节，默认 4 MiB）→ 每段一次 HTTP Range 请求。
+       --no-range   关闭 Range 分块，单请求整段下载。
 示例:  aiod-cli get /home/gem/out.tar.gz ./out.tar.gz
-注意:  目标已存在直接覆盖。
+       aiod-cli get /root/big.bin ./big.bin --chunk=1048576
+注意:  默认分块流式下载（任意大小，无 8 MiB 截断）；写完 .part 才改名落地，
+       中途失败留 .part 可重跑。目标已存在直接覆盖。
 ```
 
 ### put
 
 ```text
-aiod-cli put —— 上传本地文件到沙箱（二进制安全）
+aiod-cli put —— 上传本地文件到沙箱（二进制安全，大文件流式）
 分组: 文件
 
 用途:  multipart 上传到服务端 /tmp 再 move 到目标位置。
@@ -448,6 +452,9 @@ aiod-cli put —— 上传本地文件到沙箱（二进制安全）
 示例:  aiod-cli put ./app.tar.gz /home/gem/app.tar.gz
        aiod-cli put ./a.txt /tmp/a.txt --overwrite
        cat ./a.bin | aiod-cli put - /tmp/a.bin --overwrite
+注意:  文件路径 >32 MiB 自动分块上传（8 MiB/段，沙箱内 `cat` 拼接），
+       规避单连接大文件中途断开；≤32 MiB 走流式单请求。stdin（`-`）
+       仍需整体读入，上限 64 MiB。
 ```
 
 ### fs-tree-put

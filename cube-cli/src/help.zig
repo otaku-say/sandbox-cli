@@ -109,10 +109,13 @@ pub const table = [_]Entry{
         .detail =
         \\用途:  两种通道：interp（默认）= 把源码交给解释器跑（等价 exec python3 -c ...，
         \\       任何镜像可用）；kernel = SDK run_code 的通道，POST <proxy>/sandbox/<sid>/49999/execute
-        \\       （E2B 代码解释器 ndjson：stdout/stderr/result/error）。
+        \\       （E2B 代码解释器 ndjson：stdout/stderr/result/error）。kernel 需要镜像
+        \\       内置 49999 解释器服务（环境依赖，见下）；aio-default v5 未内置，
+        \\       普通执行请用 interp（默认）或 exec。
         \\用法:  cube-cli code <sandboxID> <代码...> [--mode=interp|kernel] [--lang=python|js|bash] [--timeout=<秒>] [--env=...] [--user=]
         \\参数:  <代码...>    位置参数用空格拼接后整体交给解释器。
-        \\       --mode=      interp（默认）或 kernel（需要镜像内置 49999 解释器服务）。
+        \\       --mode=      interp（默认，任何镜像可用）或 kernel（需要镜像监听
+        \\                  并对外暴露 49999；缺失时报 HTTP 502，不是 CLI 缺陷）。
         \\       --lang=      python（默认）/ js（js、javascript、node、nodejs）/ bash（sh、shell）。
         \\       --timeout=   秒；缺省不设截止（同 SDK run_code(timeout=None)）。
         \\       --env= / --user=  同 exec。
@@ -121,6 +124,8 @@ pub const table = [_]Entry{
         \\       cube-cli code $SID 'print(1+1)' --mode=kernel
         \\注意:  语言别名与非法语言：非法值会打印「不支持的语言: xxx」并以非 0 退出。
         \\       kernel 模式的 result 事件里 html/svg/png 等非文本格式只报大小、不展开。
+        \\       kernel 502 排查：cube-cli ports <SID> 看 49999 是否监听且绑定 0.0.0.0；
+        \\       未监听 = 镜像未内置该服务，改用 --mode=interp 或 exec。
         ,
     },
     .{
