@@ -56,12 +56,15 @@ pub fn request(
         return .{ .status = status, .body = "", .content_range = "" };
     }
 
-    // content-range 原文（小写头名；std.http 已规范化）
+    // content-range 原文（小写头名；std.http 已规范化）。
+    // 注意：h.value 指向连接读缓冲，req.deinit 后即释放，不能直接存进 Response
+    // （调用方在请求返回后才读它，悬垂指针 = 网关链路稳定段错误，见 issue #1）。
+    // 复制到 smp_allocator（短进程不回收；与 cube-cli captureHeaders 同策略）。
     var cr: []const u8 = "";
     var it = response.head.iterateHeaders();
     while (it.next()) |h| {
         if (std.ascii.eqlIgnoreCase(h.name, "content-range")) {
-            cr = h.value;
+            cr = std.heap.smp_allocator.dupe(u8, h.value) catch "";
             break;
         }
     }
