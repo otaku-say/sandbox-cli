@@ -11,10 +11,14 @@
 //!   1. 读 /etc/resolv.conf，识别出指向 fe80::/10 的 nameserver 行；
 //!   2. 把这些行剔除后写成一份临时副本 /tmp/.clidns-resolv.conf；
 //!   3. 包装 std.Io，做两件事：
-//!      a. dirOpenFile —— 把对 "/etc/resolv.conf" 的打开改写到副本；这样标准库
-//!         公开的 HostName.ResolvConf.init(io) 读到的就是干净配置；
-//!      b. netLookup —— 接管域名解析：/etc/hosts → localhost → DNS 查询，
-//!         查询用的 nameserver 列表来自上面那份干净配置。
+//!      a. dirOpenFile —— 把对 "/etc/resolv.conf" 的打开改写到副本；
+//!      b. netLookup —— 接管域名解析：/etc/hosts → localhost → DNS 查询。
+//!      注意 hookNetLookup 内部必须下传**包装后的 io**（g_io）：缺陷史是
+//!      传了未包装的 g_base，ResolvConf.init 实际读到的仍是真身
+//!      /etc/resolv.conf，过滤副本形同虚设（fe80 排第一时每次空耗 5s）。
+//!   4. queryOnce 一次性向所有 nameserver 并行发出查询（musl 同策略）：
+//!      黑洞型服务器（发包成功但不应答，如 iSH 的 198.18.0.1）只占一个
+//!      在途报文，不再让健康服务器串行等待整轮超时。
 //!
 //!   为什么必须同时接管 netLookup：Io.Threaded 的 netLookup 内部用的是**它自己
 //!   的 io**（`t.io()`）而不是调用方传入的那个，单靠文件层改写会被绕过
@@ -37,6 +41,7 @@ const max_file_bytes = 1 << 20;
 
 /// 原始（未包装）Io。CLI 进程只在启动时包装一次，单份全局状态足够。
 var g_base: Io = undefined;
+var g_io: Io = undefined; // 包装后的 io（hookNetLookup 下传用）
 var g_vtable: Io.VTable = undefined;
 var g_installed = false;
 /// hook 被标准库实际调用的次数（可观测性 / 测试用）。
@@ -68,7 +73,9 @@ pub fn installFrom(gpa: std.mem.Allocator, base: Io, src_path: []const u8) Io {
     // 关键：`Io.userdata` 是底层实现的私有数据（原实现指向 Threaded 实例），
     // 包装层必须原样透传 —— 换成自己的结构体会让其余 vtable 函数解引用错位
     // （实测直接段错误）。本模块自身状态放在全局变量里。
-    return .{ .userdata = base.userdata, .vtable = &g_vtable };
+    const wrapped: Io = .{ .userdata = base.userdata, .vtable = &g_vtable };
+    g_io = wrapped; // hookNetLookup 下传它：dnsLookup 才能读到过滤后的副本
+    return wrapped;
 }
 
 /// hook 被调用的次数：> 0 说明注入确实生效了。
@@ -90,14 +97,19 @@ fn filterUnreachable(gpa: std.mem.Allocator, src: []const u8) !?[]u8 {
     errdefer out.deinit(gpa);
 
     var changed = false;
-    var lines = std.mem.splitScalar(u8, src, '\n');
-    while (lines.next()) |line| {
-        if (isUnreachableNameserver(line)) {
+    // 语义：输出 = 原文剔除被丢弃的行（其余逐字节保留，含末尾换行的有无）。
+    // 旧实现用 splitScalar 逐行重拼，对以 \n 结尾的输入会多产出空 token
+    // 而多补一个尾换行（单测 filterUnreachable 抓的就是它）。
+    var rest = src;
+    while (rest.len > 0) {
+        const nl = std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len;
+        const line_with_nl = rest[0..@min(nl + 1, rest.len)];
+        rest = rest[line_with_nl.len..];
+        if (isUnreachableNameserver(line_with_nl[0..nl])) {
             changed = true;
             continue;
         }
-        try out.appendSlice(gpa, line);
-        try out.append(gpa, '\n');
+        try out.appendSlice(gpa, line_with_nl);
     }
 
     if (!changed) {
@@ -152,7 +164,7 @@ fn hookNetLookup(
 ) HostName.LookupError!void {
     _ = userdata;
     _ = @atomicRmw(u64, &g_hook_calls, .Add, 1, .monotonic);
-    return resolve(g_base, host_name, resolved, options);
+    return resolve(g_io, host_name, resolved, options);
 }
 
 // ---------------------------------------------------------------- 解析流程
@@ -274,7 +286,9 @@ fn dnsLookup(
 ) HostName.LookupError!void {
     defer resolved.close(io);
 
-    // 这里读到的就是过滤后的副本（hookOpenFile 已把 /etc/resolv.conf 改写过去）
+    // io 是包装后的 g_io：hookOpenFile 把 /etc/resolv.conf 的打开重定向到
+    // 过滤后的副本。（缺陷史：这里曾传入未包装的 g_base，副本永远读不到；
+    // fe80 排第一时每次查询都空耗 5 秒超时。）
     const rc = HostName.ResolvConf.init(io) catch return error.ResolvConfParseFailed;
     const nameservers = rc.nameservers();
     if (nameservers.len == 0) return error.NameServerFailure;
@@ -375,19 +389,18 @@ fn queryOnce(
     var got: [2]bool = .{ false, false };
     var answer_off: usize = 0;
 
+    // musl 同策略：一次性把全部查询并行发给所有 nameserver。
+    // 黑洞型服务器（发包成功但不应答，如 iSH 的 198.18.0.1）只占一个在途
+    // 报文；不再让排在后面的健康服务器为一轮空等付满 timeout_secs。
+    // （缺陷史：串行轮询下首台 dead 时后面健康服务器收不到包，整轮白耗。）
     for (targets) |*ns| {
-        var all_got = true;
-        for (got[0..nq]) |g| {
-            if (!g) all_got = false;
-        }
-        if (all_got) break;
-
         for (queries[0..nq]) |q| {
             const deadline = clock.now(io).addDuration(.fromSeconds(timeout_secs));
             socket.sendTimeout(io, ns, q, .{ .deadline = .{ .raw = deadline, .clock = clock } }) catch continue;
         }
+    }
 
-        var waits: usize = 0;
+    var waits: usize = 0;
         while (waits < nq) : (waits += 1) {
             const deadline = clock.now(io).addDuration(.fromSeconds(timeout_secs));
             const msg = socket.receiveTimeout(io, answers_buf[answer_off..], .{
@@ -410,7 +423,6 @@ fn queryOnce(
                 else => continue,
             }
         }
-    }
 
     for (answers[0..nq], got[0..nq]) |answer, ok| {
         if (!ok) continue;

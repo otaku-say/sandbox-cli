@@ -28,6 +28,12 @@ musl libc 会自动跳过这类地址，所以在同一台机器上 `curl` 一�
   它仍然打开真实文件）。唯一有效的注入点就是 `netLookup` 本身。
 - 包装 `std.Io` 时，`Io.userdata` 必须**原样透传**——它是底层实现的私有数据（指向
   `Threaded` 实例）。换成自己的结构体会让其它 vtable 函数解引用错位，直接段错误。
+- `hookNetLookup` 内部必须用**包装后的 io**（`g_io`），不能透传未包装的 `g_base`：
+  否则 `ResolvConf.init` 的 `File.openAbsolute("/etc/resolv.conf")` 读到的是真身，
+  过滤副本形同虚设——链路本地死服务器排第一时每次查询都空耗 5 秒超时。
+- DNS 查询把全部 nameserver **一次性并行发送**（musl 同策略），按事务 ID 收包：
+  黑洞型服务器（发包成功但不应答，如 iSH 的 198.18.0.1）只占一个在途报文，
+  不会让健康服务器串行等待整轮超时。
 - 查询实现复用标准库公开件：`HostName.ResolvConf.init(io)`（用我们包装过的 io 读过滤副本）、
   `HostName.DnsResponse`、`HostName.expand`；只有查询报文构造与 UDP 收发是自己写的。
 
