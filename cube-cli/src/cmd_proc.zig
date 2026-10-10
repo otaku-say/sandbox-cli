@@ -122,6 +122,9 @@ pub const Delta = struct { data: []const u8 = "", next: u64 = 0 };
 pub fn readDelta(c: *Ctx, base: []const u8, token: ?[]const u8, user: ?[]const u8, path: []const u8, off: u64, limit: u64, buf: []u8) !Delta {
     const res = try envd.readFileRange(c.arena, c.client, base, token, user, path, off, buf);
     if (res.status == 404) return .{ .data = "", .next = off };
+    // 416 = 偏移已到文件末尾（无新增内容），不是错误：返回空增量，
+    // follow 循环靠 pidAlive/readExit 收尾（见 issue #2）。
+    if (res.status == 416) return .{ .data = "", .next = off };
     if (!res.ok()) {
         try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body });
         return error.HttpError;
@@ -346,7 +349,9 @@ fn cmdExecStdin(c: *Ctx, a: util.Args) !void {
             if (n == 0) break;
             total += n;
         }
-        data = buf[0..total];
+        // 注意：不能直接 data = buf[0..total]（别名），后续 connectToken/sendInput
+        // 会把 HTTP 响应写进同一块 buf 头部，管道数据发送前就被掉包（见 issue #3）。
+        data = try c.arena.dupe(u8, buf[0..total]);
     } else {
         data = a.joinFrom(2, " ");
     }

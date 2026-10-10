@@ -166,7 +166,8 @@ fn cmdPtyWrite(c: *Ctx, a: util.Args) !void {
             if (n == 0) break;
             total += n;
         }
-        data = buf[0..total];
+        // 注意：不能直接别名 buf，后续 HTTP 会覆盖它（与 exec-stdin 同类问题）。
+        data = try c.arena.dupe(u8, buf[0..total]);
     } else {
         data = a.joinFrom(2, " ");
     }
