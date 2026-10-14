@@ -251,7 +251,38 @@ fn cmdExec(c: *Ctx, args: []const []const u8) !void {
     const a = try util.parse(c.arena, args);
     if (a.pos.len < 2) return error.MissingArg;
     const sid = a.pos[0];
-    const command = a.joinFrom(1, " ");
+    var command: []const u8 = "";
+
+    // 支持位置参数为 "-" 时从标准输入读取完整命令（避免复杂引号/JSON嵌套被外层 shell 剥离）
+    if (a.pos.len == 2 and std.mem.eql(u8, a.pos[1], "-")) {
+        const stdin_buf = try c.arena.alloc(u8, BUF);
+        var rbuf: [8192]u8 = undefined;
+        var r = std.Io.File.stdin().reader(c.io, &rbuf);
+        var total: usize = 0;
+        while (total < stdin_buf.len) {
+            const n = r.interface.readSliceShort(stdin_buf[total..]) catch break;
+            if (n == 0) break;
+            total += n;
+        }
+        command = std.mem.trim(u8, stdin_buf[0..total], " \r\n\t");
+    } else {
+        if (a.pos.len == 2) {
+        command = a.pos[1];
+    } else {
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
+        for (a.pos[1..], 0..) |p, i| {
+            if (i > 0) try w.print(" ", .{});
+            // 如果参数内含空格、分号、单双引号或括号，使用 shellQuote 保护
+            if (std.mem.indexOfAny(u8, p, " ;'\"()$|&<>*?~`") != null or std.mem.indexOfScalar(u8, p, '\t') != null) {
+                const q = try util.shellQuote(c.arena, p);
+                try w.print("{s}", .{q});
+            } else {
+                try w.print("{s}", .{p});
+            }
+        }
+        command = w.buffered();
+    }
+    }
 
     // 环境变量注入：--env=K=V 直接给值；--env=NAME 从本机环境读同名变量
     // （敏感值不必出现在命令行 / 进程列表里）

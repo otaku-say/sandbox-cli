@@ -37,6 +37,10 @@ pub const table = [_]Entry{
         \\                      [--env=K=V] [--volume=卷名[:挂载路径]] [--lifecycle=kill|pause]
         \\                      [--auto-resume] [--no-internet] [--distribution-scope=节点,IP]
         \\                      [--mcp=<JSON>]
+        \\                      [--mcp: 遵循 E2B 规范的泛化 MCP JSON 对象，支持三种模式：
+        \\                             ① catalog 预装/声明服务：`{"<服务名>": {}}`（如 `{"time":{}}`）
+        \\                             ② GitHub 动态仓库服务：`{"github/<owner>/<repo>": {"runCmd":"...","envs":{...}}}`
+        \\                             ③ 任意自定义命令服务：`{"<服务名>": {"runCmd":"<启动命令>","envs":{...}}}`]
         \\参数:  --need=      需要的能力，默认 code。不带任何参数就是 aio-code 镜像（自带 Zig 工具链）
         \\                    browser / desktop 分别对应 aio-daemon / aio-computer 镜像。
         \\       --template=  直接指定模板：先查服务端别名（与 tpl-resolve 同接口），命中即用；
@@ -88,9 +92,9 @@ pub const table = [_]Entry{
         .brief = "在沙箱内执行命令",
         .detail =
         \\用途:  走沙箱内 envd（49983）执行一条命令并打印 stdout/stderr/exit。
-        \\用法:  cube-cli exec <sandboxID> <命令...> [--cwd=<目录>] [--env=NAME|KEY=VAL] [--timeout=<秒>] [--user=<用户>]
+        \\用法:  cube-cli exec <sandboxID> <命令... | -> [--cwd=<目录>] [--env=NAME|KEY=VAL] [--timeout=<秒>] [--user=<用户>]
         \\参数:  <sandboxID>  目标沙箱。
-        \\       <命令...>    位置参数会原样用空格拼回一条命令（无需自己转义引号）。
+        \\       <命令...>    位置参数（支持 `--` 分隔以安全透传带旗标命令）；当位置参数为 `-` 时从标准输入读取整条命令。
         \\       --cwd=       工作目录。
         \\       --env=       K=V 直接给值；只给 NAME 则从**本机环境**读同名变量注入
         \\                    （敏感值不必出现在命令行 / 进程列表里）。
@@ -98,8 +102,10 @@ pub const table = [_]Entry{
         \\                    envd 硬截止（Connect-Timeout-Ms），到点进程被取消。
         \\       --user=      以指定用户身份执行（envd Basic 作用域；默认 root）。
         \\示例:  cube-cli exec $SID 'zig version'
+        \\       cube-cli exec $SID -- python3 --version
         \\       cube-cli exec $SID 'python3 -c "print(1+1)"' --cwd=/tmp --timeout=300
         \\       cube-cli exec $SID 'printenv' --env=GITHUB_TOKEN
+        \\       echo 'mcp-gateway --config "{\"time\":{}}"' | cube-cli exec $SID -
         \\注意:  需要 CUBESANDBOX_PROXY_URL（数据面网关）才有 envd 通道。
         ,
     },

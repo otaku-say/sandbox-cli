@@ -88,17 +88,31 @@ pub const Args = struct {
 };
 
 pub fn parse(arena: std.mem.Allocator, argv: []const []const u8) !Args {
+    var end_of_flags = false;
     var npos: usize = 0;
     var nflag: usize = 0;
     for (argv) |a| {
-        if (std.mem.startsWith(u8, a, "--")) nflag += 1 else npos += 1;
+        if (!end_of_flags and std.mem.eql(u8, a, "--")) {
+            end_of_flags = true;
+            continue;
+        }
+        if (!end_of_flags and std.mem.startsWith(u8, a, "--")) {
+            nflag += 1;
+        } else {
+            npos += 1;
+        }
     }
     const pos = try arena.alloc([]const u8, npos);
     const flags = try arena.alloc([2][]const u8, nflag);
     var pi: usize = 0;
     var fi: usize = 0;
+    end_of_flags = false;
     for (argv) |a| {
-        if (std.mem.startsWith(u8, a, "--")) {
+        if (!end_of_flags and std.mem.eql(u8, a, "--")) {
+            end_of_flags = true;
+            continue;
+        }
+        if (!end_of_flags and std.mem.startsWith(u8, a, "--")) {
             const body = a[2..];
             if (std.mem.indexOfScalar(u8, body, '=')) |i| {
                 flags[fi] = .{ body[0..i], body[i + 1 ..] };

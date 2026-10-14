@@ -72,7 +72,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
         exitWith(out, 1);
     }
     // `<cmd> --help` / `<cmd> -h` / `<cmd> help`
+    // 遇到 "--" 停止扫描帮助参数，避免 "aiod-cli exec python3 -h" 误触发当前 CLI 帮助
     for (rest) |a| {
+        if (std.mem.eql(u8, a, "--")) break;
         if (!help.isHelpArg(a)) continue;
         if (help.find(cmd)) |e| {
             try help.printOne(out, e);

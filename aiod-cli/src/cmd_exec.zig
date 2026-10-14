@@ -166,7 +166,25 @@ fn cmdExecInner(c: *Ctx, a: util.Args) !void {
     }
 
     if (a.pos.len == 0) return error.MissingArg;
-    const body = try runBody(c, a, a.joinFrom(0, " "), null);
+    var command: []const u8 = "";
+    if (a.pos.len == 1 and std.mem.eql(u8, a.pos[0], "-")) {
+        command = try util.readStdinAlloc(c.io, c.arena, BUF);
+    } else if (a.pos.len == 1) {
+        command = a.pos[0];
+    } else {
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
+        for (a.pos, 0..) |p, i| {
+            if (i > 0) try w.print(" ", .{});
+            if (std.mem.indexOfAny(u8, p, " ;'\"()$|&<>*?~`") != null or std.mem.indexOfScalar(u8, p, '\t') != null) {
+                const q = try util.shellQuote(c.arena, p);
+                try w.print("{s}", .{q});
+            } else {
+                try w.print("{s}", .{p});
+            }
+        }
+        command = w.buffered();
+    }
+    const body = try runBody(c, a, command, null);
     const res = try httpc.postJson(c.client, try c.url("/v2/commands"), try jsonAuth(c), body, buf);
     if (!res.ok()) return errOut(c, res);
     try emit(c, res.body);
@@ -192,8 +210,26 @@ fn errOut(c: *Ctx, res: httpc.Response) !void {
 /// async <命令> [--cwd=] [--env=] [--user=] —— 打印 command_id
 fn cmdAsync(c: *Ctx, a: util.Args) !void {
     if (a.pos.len == 0) return error.MissingArg;
+    var command: []const u8 = "";
+    if (a.pos.len == 1 and std.mem.eql(u8, a.pos[0], "-")) {
+        command = try util.readStdinAlloc(c.io, c.arena, BUF);
+    } else if (a.pos.len == 1) {
+        command = a.pos[0];
+    } else {
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
+        for (a.pos, 0..) |p, i| {
+            if (i > 0) try w.print(" ", .{});
+            if (std.mem.indexOfAny(u8, p, " ;'\"()$|&<>*?~`") != null or std.mem.indexOfScalar(u8, p, '\t') != null) {
+                const q = try util.shellQuote(c.arena, p);
+                try w.print("{s}", .{q});
+            } else {
+                try w.print("{s}", .{p});
+            }
+        }
+        command = w.buffered();
+    }
     const buf = try c.arena.alloc(u8, BUF);
-    const body = try runBody(c, a, a.joinFrom(0, " "), "async");
+    const body = try runBody(c, a, command, "async");
     const res = try httpc.postJson(c.client, try c.url("/v2/commands"), try jsonAuth(c), body, buf);
     if (!res.ok()) return errOut(c, res);
     const parsed = std.json.parseFromSlice(std.json.Value, c.arena, res.body, .{}) catch {

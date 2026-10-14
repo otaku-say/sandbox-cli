@@ -39,17 +39,31 @@ pub const Args = struct {
 };
 
 pub fn parse(arena: std.mem.Allocator, argv: []const []const u8) !Args {
+    var end_of_flags = false;
     var npos: usize = 0;
     var nflag: usize = 0;
     for (argv) |a| {
-        if (std.mem.startsWith(u8, a, "--")) nflag += 1 else npos += 1;
+        if (!end_of_flags and std.mem.eql(u8, a, "--")) {
+            end_of_flags = true;
+            continue;
+        }
+        if (!end_of_flags and std.mem.startsWith(u8, a, "--")) {
+            nflag += 1;
+        } else {
+            npos += 1;
+        }
     }
     const pos = try arena.alloc([]const u8, npos);
     const flags = try arena.alloc([2][]const u8, nflag);
     var pi: usize = 0;
     var fi: usize = 0;
+    end_of_flags = false;
     for (argv) |a| {
-        if (std.mem.startsWith(u8, a, "--")) {
+        if (!end_of_flags and std.mem.eql(u8, a, "--")) {
+            end_of_flags = true;
+            continue;
+        }
+        if (!end_of_flags and std.mem.startsWith(u8, a, "--")) {
             const body = a[2..];
             if (std.mem.indexOfScalar(u8, body, '=')) |i| {
                 flags[fi] = .{ body[0..i], body[i + 1 ..] };
@@ -191,4 +205,42 @@ pub fn jsonEscapedLen(s: []const u8) usize {
         };
     }
     return n;
+}
+
+/// 从 stdin 读取最多 max_bytes 字节
+pub fn readStdinAlloc(io: std.Io, arena: std.mem.Allocator, max_bytes: usize) ![]const u8 {
+    const buf = try arena.alloc(u8, max_bytes);
+    var rbuf: [8192]u8 = undefined;
+    var r = std.Io.File.stdin().reader(io, &rbuf);
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = r.interface.readSliceShort(buf[total..]) catch break;
+        if (n == 0) break;
+        total += n;
+    }
+    return std.mem.trim(u8, buf[0..total], " \r\n\t");
+}
+
+/// POSIX 单引号转义（' → '\''）：把任意文本安全嵌入 shell 命令。
+pub fn shellQuote(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var cnt: usize = 2;
+    for (s) |ch| {
+        cnt += if (ch == '\'') 4 else 1;
+    }
+    const out = try arena.alloc(u8, cnt);
+    var i: usize = 0;
+    out[i] = '\'';
+    i += 1;
+    for (s) |ch| {
+        if (ch == '\'') {
+            @memcpy(out[i..][0..4], "'\\''");
+            i += 4;
+        } else {
+            out[i] = ch;
+            i += 1;
+        }
+    }
+    out[i] = '\'';
+    i += 1;
+    return out[0..i];
 }
