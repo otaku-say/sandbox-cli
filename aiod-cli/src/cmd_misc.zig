@@ -64,7 +64,12 @@ fn postJ(c: *Ctx, path: []const u8, body: []const u8) !void {
 
 /// code <源码> [--lang=python|javascript] [--session=]
 fn cmdCode(c: *Ctx, a: util.Args) !void {
-    const src = a.joinFrom(0, " ");
+    var src: []const u8 = "";
+    if (a.pos.len == 1 and std.mem.eql(u8, a.pos[0], "-")) {
+        src = try util.readStdinAlloc(c.io, c.arena, 256 << 10);
+    } else {
+        src = a.joinFrom(0, " ");
+    }
     if (src.len == 0) return error.MissingArg;
     var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 256 << 10));
     try w.print("{{\"code\":\"{s}\"", .{try util.jsonEscape(c.arena, src)});
@@ -205,10 +210,39 @@ fn cmdWatchEvents(c: *Ctx, a: util.Args) !void {
 fn cmdMcp(c: *Ctx, a: util.Args) !void {
     const method = a.at(0) orelse return error.MissingArg;
     var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
-    try w.print("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{s}\"", .{try util.jsonEscape(c.arena, method)});
-    if (a.get("params")) |p| try w.print(",\"params\":{s}", .{p});
+    if (a.has("notify")) {
+        try w.print("{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\"", .{try util.jsonEscape(c.arena, method)});
+    } else {
+        try w.print("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{s}\"", .{try util.jsonEscape(c.arena, method)});
+    }
+    if (a.get("params")) |p| {
+        if (std.mem.eql(u8, p, "-")) {
+            const stdin_data = try util.readStdinAlloc(c.io, c.arena, 1 << 20);
+            try w.print(",\"params\":{s}", .{stdin_data});
+        } else {
+            try w.print(",\"params\":{s}", .{p});
+        }
+    }
     try w.print("}}", .{});
-    try postJ(c, "/mcp", w.buffered());
+    const buf = try c.arena.alloc(u8, 256 << 10);
+    const res = try httpc.postJson(c.client, try c.url("/mcp"), try jsonAuth(c), w.buffered(), buf);
+    if (res.status == 202) {
+        try c.out.print("{s}\n", .{if (res.body.len > 0) res.body else "（202 Accepted，无响应内容）"});
+        return;
+    }
+    if (!res.ok()) return fail(c, res);
+    // 解析 JSON-RPC error
+    const parsed = std.json.parseFromSlice(std.json.Value, c.arena, res.body, .{}) catch {
+        try c.out.print("{s}\n", .{res.body});
+        return;
+    };
+    if (parsed.value == .object) {
+        if (parsed.value.object.get("error")) |_| {
+            try c.out.print("JSON-RPC error: {s}\n", .{res.body});
+            return error.RpcError;
+        }
+    }
+    try c.out.print("{s}\n", .{res.body});
 }
 
 fn eq(a: []const u8, b: []const u8) bool {
