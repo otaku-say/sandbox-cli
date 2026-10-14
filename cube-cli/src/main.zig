@@ -312,6 +312,10 @@ fn buildCreateExtras(c: *Ctx, a: util.Args) ![]const u8 {
         }
         out = try std.fmt.allocPrint(c.arena, "{s},\"distributionScope\":[{s}]", .{ out, list });
     }
+    if (a.get("mcp")) |mcp| {
+        // --mcp=<JSON>：E2B 兼容的 MCP 服务配置透传到 POST /sandboxes
+        out = try std.fmt.allocPrint(c.arena, "{s},\"mcp\":{s}", .{ out, mcp });
+    }
     return out;
 }
 

@@ -22,4 +22,4 @@ pub fn proxyURL() ?[]const u8 {
     return getenv("CUBESANDBOX_PROXY_URL");
 }
 
-pub const version = "0.2.0";
+pub const version = "0.7.3";

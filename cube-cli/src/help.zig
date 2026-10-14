@@ -36,6 +36,7 @@ pub const table = [_]Entry{
         \\                      [--timeout=<秒>] [--note=<名称>] [--agent=<谁>] [--task=<做什么>]
         \\                      [--env=K=V] [--volume=卷名[:挂载路径]] [--lifecycle=kill|pause]
         \\                      [--auto-resume] [--no-internet] [--distribution-scope=节点,IP]
+        \\                      [--mcp=<JSON>]
         \\参数:  --need=      需要的能力，默认 code。不带任何参数就是 aio-code 镜像（自带 Zig 工具链）
         \\                    browser / desktop 分别对应 aio-daemon / aio-computer 镜像。
         \\       --template=  直接指定模板：先查服务端别名（与 tpl-resolve 同接口），命中即用；
@@ -697,11 +698,14 @@ pub const table = [_]Entry{
         .brief = "沙箱详情（规格 / 元数据 / 卷挂载 / 截止时间）",
         .detail =
         \\用途:  查看单个沙箱完整状态：state、CPU/内存/磁盘、起止时间、metadata、volumeMounts、domain。
-        \\用法:  cube-cli info <sandboxID> [--json] [--wait=<状态>] [--timeout=<秒>] [--host[=端口]]
+        \\用法:  cube-cli info <sandboxID> [--json] [--wait=<状态>] [--timeout=<秒>]
+        \\                     [--host[=端口]] [--mcp-url] [--mcp-token]
         \\参数:  --json 原样输出；--wait= 轮询到指定状态（如 running）；--timeout= 最大等待秒数。
         \\       --host[=端口]  打印 domain 与 SDK get_host(端口) 的虚拟域名（排障对照上游文档）：
         \\                      `--host` 打印 domain + envd 的 49983 虚拟域名；`--host=49999` 只打印
         \\                      `<端口>-<沙箱ID>.<域名>`。本部署无该域名解析，数据面走 proxy 路径路由。
+        \\       --mcp-url      打印 MCP 网关流式 HTTP 端点（同 SDK get_mcp_url()）。
+        \\       --mcp-token    读取沙箱内 MCP 网关鉴权令牌（同 SDK get_mcp_token()）。
         \\示例:  cube-cli info 6f1a... --json
         \\       cube-cli info 6f1a... --host=49999
         \\注意:  上游详情不含网络策略（改策略用 net 命令）。
