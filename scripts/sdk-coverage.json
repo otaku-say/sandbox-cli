@@ -5,9 +5,9 @@
     "tracked_ref": "master",
     "sdk_root": "sdk/python",
     "package": "cubesandbox",
-    "synced_version": "0.7.2",
-    "synced_at": "2026-10-05",
-    "synced_detail": "v0.7.2 tag 与 master 的 sdk/python 逐文件一致（实测 diff）；PyPI cubesandbox 最新发布为 0.7.0（surface 略旧：实测 7 处签名差异）。--fetch 默认跟踪 master"
+    "synced_version": "0.7.3",
+    "synced_at": "2026-10-14",
+    "synced_detail": "v0.7.3 tag 对应 Python SDK 0.7.3（Bump SDK versions to 0.7.3 及 MCP 特性支持）。cube-cli 同步升级为 v0.7.3 并提供对齐命令。"
   },
   "extract": {
     "rule": "cubesandbox/*.py 中公开类（类名不以 _ 开头）的公开方法/属性（不以 _ 开头或 @property）；同名 getter/setter 取第一条；签名=参数列表（ast.unparse 归一化，不含返回值）"
@@ -347,11 +347,11 @@
     },
     {
       "key": "Sandbox.create",
-      "signature": "cls, template: str | None=None, *, timeout: int | None=None, env_vars: Dict[str, str] | None=None, envs: Dict[str, str] | None=None, metadata: Dict[str, str] | None=None, distribution_scope: list[str] | None=None, allow_internet_access: bool=True, network: Dict[str, Any] | None=None, lifecycle: Dict[str, Any] | None=None, volume_mounts: VolumeMountsArg | None=None, config: Config | None=None, **kwargs: Any",
+      "signature": "cls, template: str | None=None, *, timeout: int | None=None, env_vars: Dict[str, str] | None=None, envs: Dict[str, str] | None=None, metadata: Dict[str, str] | None=None, distribution_scope: list[str] | None=None, allow_internet_access: bool=True, network: Dict[str, Any] | None=None, lifecycle: Dict[str, Any] | None=None, volume_mounts: VolumeMountsArg | None=None, mcp: Dict[str, Any] | None=None, config: Config | None=None, **kwargs: Any",
       "kind": "classmethod",
       "status": "implemented",
       "command": "new",
-      "note": "--need/--template/--timeout/--env/--volume/--lifecycle/--auto-resume/--no-internet/--distribution-scope/--agent/--task"
+      "note": "--need/--template/--timeout/--env/--volume/--lifecycle/--auto-resume/--no-internet/--distribution-scope/--mcp/--agent/--task"
     },
     {
       "key": "Sandbox.create_snapshot",
@@ -397,6 +397,22 @@
       "kind": "method",
       "status": "implemented",
       "command": "info [--json]"
+    },
+    {
+      "key": "Sandbox.get_mcp_token",
+      "signature": "self",
+      "kind": "method",
+      "status": "implemented",
+      "command": "info --mcp-token",
+      "note": "读取沙箱内 MCP 网关鉴权令牌（/etc/mcp-gateway/.token）"
+    },
+    {
+      "key": "Sandbox.get_mcp_url",
+      "signature": "self",
+      "kind": "method",
+      "status": "implemented",
+      "command": "info --mcp-url",
+      "note": "打印 MCP 网关流式 HTTP 端点（http://50005-<sid>.<domain>/mcp）"
     },
     {
       "key": "Sandbox.health",

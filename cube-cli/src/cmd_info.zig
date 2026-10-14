@@ -7,14 +7,18 @@ const httpc = @import("httpc.zig");
 const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const jsonfmt = @import("jsonfmt.zig");
+const envd = @import("envd.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
 
 pub const help =
-    \\info <sandboxID> [--json] [--wait=目标状态] [--timeout=秒]
+    \\info <sandboxID> [--json] [--wait=目标状态] [--timeout=秒] [--host[=端口]] [--mcp-url] [--mcp-token]
     \\  沙箱详情：状态 / CPU / 内存 / 磁盘 / 回收时刻 / 归属标记 / 卷挂载 / 域名。
     \\  --wait=running 轮询直到进入目标状态（默认上限 120 秒，可 --timeout 调整）。
+    \\  --host[=端口] 打印 domain 与 SDK get_host(port) 的虚拟域名。
+    \\  --mcp-url    打印 MCP 网关流式 HTTP 端点（同 SDK get_mcp_url()）。
+    \\  --mcp-token  读取沙箱内 MCP 网关鉴权令牌（同 SDK get_mcp_token()）。
     \\  --json 原样输出接口 JSON。
 ;
 
@@ -74,6 +78,36 @@ pub fn run(c: *Ctx, argv: []const []const u8) !void {
             return error.BadArg;
         };
         try c.out.print("{d}-{s}.{s}\n", .{ port, sid, domain });
+        return;
+    }
+
+    // --mcp-url：打印 MCP 网关流式 HTTP 端点（http://50005-<sid>.<domain>/mcp）
+    if (a.has("mcp-url")) {
+        const res0 = try fetch(c, sid);
+        const parsed = std.json.parseFromSlice(Detail, c.arena, res0.body, .{ .ignore_unknown_fields = true }) catch {
+            try c.out.print("{s}\n", .{res0.body});
+            return;
+        };
+        const domain: []const u8 = if (parsed.value.domain) |dv| (jsonfmt.valueStr(c.arena, dv) catch "-") else "-";
+        try c.out.print("http://50005-{s}.{s}/mcp\n", .{ sid, domain });
+        return;
+    }
+
+    // --mcp-token：读取沙箱内 /etc/mcp-gateway/.token（同 SDK get_mcp_token()）
+    if (a.has("mcp-token")) {
+        const buf = try c.arena.alloc(u8, BUF);
+        const token = try c.connectToken(sid, buf);
+        const base = try c.envdBase(sid);
+        const res0 = envd.readFile(c.arena, c.client, base, token, "root", "/etc/mcp-gateway/.token", buf) catch |err| {
+            try c.out.print("读取 MCP 令牌失败: {any}\n", .{err});
+            return error.NotFound;
+        };
+        if (!res0.ok()) {
+            try c.out.print("沙箱未启用 MCP 或 /etc/mcp-gateway/.token 不存在 (HTTP {d})\n", .{res0.status});
+            return error.NotFound;
+        }
+        const tok = std.mem.trim(u8, res0.body, " \r\n\t");
+        try c.out.print("{s}\n", .{tok});
         return;
     }
 
