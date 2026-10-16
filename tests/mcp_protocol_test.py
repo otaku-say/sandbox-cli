@@ -66,6 +66,12 @@ class Stdio:
         self.p.stdin.write(text.encode() + b"\n")
         self.p.stdin.flush()
 
+    def send_raw(self, data):
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self.p.stdin.write(data)
+        self.p.stdin.flush()
+
     def read_line(self, timeout=15.0, require_json=True):
         deadline = time.time() + timeout
         while b"\n" not in self.buf:
@@ -305,6 +311,135 @@ def t_purity(c, tools):
         assert_json_line(line)
 
 
+@case("id 扩展边界（0 / 负数 / 超大整数 / 含 emoji 字符串）")
+def t_id_edge_cases(c):
+    test_ids = [
+        0,
+        -1,
+        -987654321,
+        9223372036854775807,
+        "id-with-emoji-🚀🎉",
+        "emoji-only-✨🔥",
+        "nested/string:id-12345",
+    ]
+    for tid in test_ids:
+        c.send({"jsonrpc": "2.0", "id": tid, "method": "ping"})
+        r = c.read_json()
+        assert r.get("id") == tid, f"id={tid!r} 保真失败，实际返回 {r.get('id')!r}"
+
+
+@case("params 非法类型（字符串/数组/null 时 tools/call 响应）")
+def t_params_invalid_types(c):
+    bad_params_cases = [
+        (10001, "string_params", "params 为字符串"),
+        (10002, [1, 2, 3], "params 为数组"),
+        (10003, None, "params 为 null（不传 params 字段）"),
+    ]
+    for req_id, bad_p, desc in bad_params_cases:
+        req = {"jsonrpc": "2.0", "id": req_id, "method": "tools/call"}
+        if bad_p is not None:
+            req["params"] = bad_p
+        c.send(req)
+        r = c.read_json()
+        assert r.get("id") == req_id, f"{desc} 响应 id 不匹配: {r}"
+        err = r.get("error")
+        assert err is not None, f"{desc} 应返回 error，实际: {r}"
+        assert err.get("code") == -32602, f"{desc} 应返回 -32602 Invalid params，实际: {err}"
+
+    # params 显式为 null: {"params": null}
+    c.send({"jsonrpc": "2.0", "id": 10004, "method": "tools/call", "params": None})
+    r = c.read_json()
+    assert r.get("id") == 10004, f"params: null 响应 id 不匹配: {r}"
+    assert r.get("error", {}).get("code") == -32602, f"params: null 应返回 -32602，实际: {r}"
+
+
+@case("行尾/空白/多消息容错（CRLF容忍、空白行忽略、同行多消息）")
+def t_line_endings_and_whitespace(c):
+    # 1. CRLF 行尾容忍
+    c.send_raw(b'{"jsonrpc":"2.0","id":9001,"method":"ping"}\r\n')
+    r1 = c.read_json()
+    assert r1.get("id") == 9001, f"CRLF 响应 id 错误: {r1}"
+
+    # 2. 纯空白行忽略（多行空格/tab/回车换行，不产生任何 stdout 响应）
+    c.send_raw(b"   \r\n\t\t   \n  \n")
+    c.send({"jsonrpc": "2.0", "id": 9002, "method": "ping"})
+    r2 = c.read_json()
+    assert r2.get("id") == 9002, f"空白行未被正确跳过，读取到错误响应: {r2}"
+
+    # 3. 同一行多条消息（无换行分隔）：
+    # 行为说明：MCP 走 NDJSON（一行一条 JSON 消息），服务器用 takeDelimiter('\n') 按行读取。
+    # 当客户端在单行内拼合多条 JSON（如 `{"..."}{"..."}`）时，JSON 解析器会将整行判定为畸形 JSON（尾随字符），
+    # 服务端返回单条 -32700 Parse error（id=null），绝不误拆分、不部分执行、也不导致后续请求失序。
+    c.send_raw(b'{"jsonrpc":"2.0","id":9003,"method":"ping"}{"jsonrpc":"2.0","id":9004,"method":"ping"}\n')
+    r3 = c.read_json()
+    assert r3.get("id") is None, f"同行多消息应判定为整体畸形解析错误 id=null: {r3}"
+    assert r3.get("error", {}).get("code") == -32700, f"同行多消息未返回 -32700: {r3}"
+
+    # 验证同行多消息错误后，后续正常消息仍可正常工作
+    c.send({"jsonrpc": "2.0", "id": 9005, "method": "ping"})
+    r4 = c.read_json()
+    assert r4.get("id") == 9005, f"同行多消息后后续请求失败: {r4}"
+
+
+@case("鲁棒性（发 20 条畸形/垃圾输入后服务不退出且正常 ping）")
+def t_resilience_garbage(c):
+    garbage_lines = [
+        b"not-json-at-all\n",
+        b"{{{invalid_json\n",
+        b"{\"jsonrpc\": \"2.0\"\n",
+        b"null\n",
+        b"123456\n",
+        b"\"just a string\"\n",
+        b"[1, 2, 3]\n",
+        b"{\"unclosed\": \n",
+        b"{}\n",
+        b"{\"jsonrpc\": \"1.0\"}\n",
+    ] * 2  # 共 20 条
+    for g in garbage_lines:
+        c.send_raw(g)
+    # 逐条读取对应的错误响应（每条非合法 JSON-RPC 请求均会触发一行错误响应且合法 JSON-RPC）
+    for _ in range(len(garbage_lines)):
+        r = c.read_json()
+        assert r.get("error") is not None, f"垃圾输入未返回 error: {r}"
+    # 发送正常 ping，验证服务仍健康存活
+    c.send({"jsonrpc": "2.0", "id": 11000, "method": "ping"})
+    r = c.read_json()
+    assert r.get("id") == 11000, f"20 条垃圾输入后 ping 响应 id 不匹配: {r}"
+    assert r.get("result") == {}, f"20 条垃圾输入后 ping 返回异常: {r}"
+
+
+@case("长消息边界（单条 ~1 MiB tools/call 参数）")
+def t_large_message(c, tools):
+    big_str = "A" * (1024 * 1024)  # 1 MiB 字符串
+    req_id = 7001
+    c.send({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "tools/call",
+        "params": {
+            "name": tools[0]["name"],
+            "arguments": {"data": big_str, "payload": big_str}
+        }
+    })
+    r = c.read_json(timeout=20.0)
+    assert r.get("id") == req_id, f"长消息响应 id 不匹配: {r.get('id')} != {req_id}"
+    assert "result" in r or "error" in r, f"长消息未返回标准 result 或 error: {r}"
+
+
+@case("并发/顺序（连续 200 条请求响应顺序与合法性）")
+def t_concurrency_ordering(c):
+    methods = ["ping", "tools/list", "unknown/method"]
+    expected = []
+    for i in range(200):
+        req_id = 8000 + i
+        m = methods[i % len(methods)]
+        expected.append(req_id)
+        c.send({"jsonrpc": "2.0", "id": req_id, "method": m})
+    for exp_id in expected:
+        r = c.read_json(timeout=15.0)
+        assert r.get("id") == exp_id, f"请求/响应顺序不一致：期望 id={exp_id}，实际={r.get('id')}"
+
+
 @case("EOF 干净退出（退出码 0）")
 def t_eof(c):
     code = c.close()
@@ -348,6 +483,18 @@ def main():
         ok("缺配置可读错误")
         t_purity(c, tools)
         ok("stdout 纯净性")
+        t_id_edge_cases(c)
+        ok("id 扩展边界（0/负数/大数/emoji）")
+        t_params_invalid_types(c)
+        ok("params 非法类型")
+        t_line_endings_and_whitespace(c)
+        ok("CRLF/空白行/同行多消息容错")
+        t_resilience_garbage(c)
+        ok("畸形输入后服务不退出")
+        t_large_message(c, tools)
+        ok("长消息边界（~1 MiB 参数）")
+        t_concurrency_ordering(c)
+        ok("连续 200 条请求顺序与合法性")
         t_eof(c)
         ok("EOF 退出码 0")
     except Exception as e:  # noqa: BLE001
