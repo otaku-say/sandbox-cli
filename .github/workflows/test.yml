@@ -1,0 +1,30 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: 构建两个 CLI (Debug)
+        run: |
+          cd cube-cli && zig build
+          cd ../aiod-cli && zig build
+
+      - name: 运行全量测试套件
+        run: sh tests/run_all.sh
+
+      - name: 校验文档与 help 严格同步
+        run: |
+          python3 scripts/gen-docs.py --cube cube-cli/zig-out/bin/cube-cli --aio aiod-cli/zig-out/bin/aiod-cli
+          git diff --exit-code docs/

@@ -184,6 +184,71 @@ python3 scripts/check-sdk-drift.py --fetch          # 想按发布版跟踪：--
 SDK 检查挂在 `.github/workflows/drift.yml`（每周一 + 手动触发）；v2 检查需要活体 aiod
 （CI 里没有），在沙箱/本机手动跑首条命令。
 
+## MCP Server（Agent 接口）
+
+两个 CLI 均支持作为 **Model Context Protocol (MCP)** 服务运行（子命令 `mcp-server`）。
+MCP Client（如 Claude Desktop、Cursor、Cline 等）可直接将二进制作为子进程拉起，走 stdio 传输与 JSON-RPC 2.0 协议闭环调用沙箱能力。
+
+### 客户端配置示例
+
+#### Claude Desktop (`claude_desktop_config.json`) / Cursor (`mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "cube-control": {
+      "command": "/path/to/cube-cli",
+      "args": ["mcp-server"],
+      "env": {
+        "CUBESANDBOX_API_URL": "https://api.example.com",
+        "CUBESANDBOX_API_KEY": "your-api-key",
+        "CUBESANDBOX_PROXY_URL": "https://proxy.example.com"
+      }
+    },
+    "aiod-data": {
+      "command": "/path/to/aiod-cli",
+      "args": ["mcp-server"],
+      "env": {
+        "SANDBOX_BASE": "https://<网关>/sandbox/<sandboxID>/8080"
+      }
+    }
+  }
+}
+```
+
+> **缺配置不退出**：启动时缺少环境变量不会崩溃退出，仍能正常响应 `initialize` 与 `tools/list`；仅在具体工具被调用且缺少对应配置时返回友好的 `isError: true` 错误提示（指引补充对应环境变量）。
+
+### 工具分组概览
+
+按照功能分域暴露 MCP 工具（工具名采用 `snake_case`）：
+
+#### `cube-cli`（控制面 + envd 数据面通道）
+- **沙箱生命周期**：`sandbox_create`、`sandbox_list`、`sandbox_info`、`sandbox_delete`、`sandbox_pause`、`sandbox_resume`、`sandbox_refresh`、`sandbox_timeout`、`sandbox_net_set`、`sandbox_ports`
+- **进程执行**：`sandbox_exec`、`sandbox_exec_async`、`sandbox_exec_logs`、`sandbox_exec_kill`、`sandbox_exec_exit_code`
+- **文件操作（envd 通道）**：`file_read`、`file_write`、`file_stat`、`file_list`、`file_make_dir`、`file_remove`
+- **快照与持久卷**：`snapshot_create`、`snapshot_list`、`snapshot_delete`、`snapshot_rollback`、`volume_create`、`volume_list`、`volume_delete`
+- **模板与容量**：`template_list`、`template_caps`
+
+#### `aiod-cli`（沙箱内数据面 / aiod v2）
+- **命令执行**：`exec`、`exec_async`、`exec_kill`、`exec_output`、`exec_status`
+- **文件系统**：`file_read`、`file_write`、`file_upload`、`file_download`、`file_delete`、`file_stat`、`file_move`、`file_find`、`fs_tree`、`fs_chmod`
+- **交互终端 (PTY)**：`pty_create`、`pty_write`、`pty_read`、`pty_resize`、`pty_close`
+- **浏览器自动化**：`browser_navigate`、`browser_screenshot`、`browser_click`、`browser_type`、`browser_get_text`、`browser_scroll`、`browser_page_info`、`browser_cookies_get`、`browser_cookies_set`
+- **桌面 Computer-Use**：`desktop_info`、`desktop_screenshot`、`desktop_cursor`、`desktop_clipboard`、`desktop_windows`、`desktop_a11y`、`desktop_a11y_nodes`、`desktop_act`、`desktop_act_batch`、`desktop_record`
+
+### stdout 纯净性承诺
+
+- **绝对无协议外噪音**：stdio 模式下 stdout 只出现「单行、以 `\n` 结尾、可严格被 JSON 解析」的 JSON-RPC 2.0 消息；绝对不输出 banner、进度条、ANSI 颜色代码或任何非协议文本。
+- **诊断分流至 stderr**：所有日志、警告与诊断信息均通过 stderr 输出；添加 `--verbose` 开关时仅在 stderr 打印调试追踪。
+
+### 已知限制
+
+遵循 MCP 规范及设计边界，以下特性在当前版本明确不做：
+- **不支持批处理**：JSON-RPC 顶层批量请求数组将返回 `-32600 Invalid Request`（符合最新 MCP 协议规范）。
+- **无流式/进度通知**：仅接收客户端 `notifications/*` 通知但不做下发，不支持 resources 和 prompts 能力。
+- **无 follow 类工具**：长驻阻塞循环（如 `exec-logs follow`、`pty-read`、`log --follow` 等）不暴露为 MCP 工具。
+- **仅提供 stdio 传输**：不内置 SSE 或 HTTP 传输，保持单二进制静态分发的纯粹性。
+
 ## 注意
 
 - **flag 一律 `--key=value` 等号写法**（`--need=code`）；布尔开关直接写 `--flag`。

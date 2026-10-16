@@ -52,7 +52,7 @@ check "cube-cli help all" 0 "$CUBE" help all >/dev/null
 check "aiod-cli help all"  0 "$AIO"  help all >/dev/null
 
 echo "== 3. help <命令> / <命令> --help / <命令> -h 三种写法等价 =="
-for c in new exec tpl-caps vol-new; do
+for c in new exec tpl-caps vol-new mcp-server; do
     a=$("$CUBE" help "$c" 2>&1)
     b=$("$CUBE" "$c" --help 2>&1)
     d=$("$CUBE" "$c" -h 2>&1)
@@ -62,7 +62,7 @@ for c in new exec tpl-caps vol-new; do
         bad "cube-cli $c：三种写法输出不一致"
     fi
 done
-for c in exec pty-ws br-cookie-set cmp-a11y; do
+for c in exec pty-ws br-cookie-set cmp-a11y mcp-server; do
     a=$("$AIO" help "$c" 2>&1)
     b=$("$AIO" "$c" --help 2>&1)
     d=$("$AIO" "$c" -h 2>&1)
@@ -119,6 +119,8 @@ o=$(env -u SANDBOX_BASE "$AIO" help 2>&1); rc=$?
 [ "$rc" -eq 0 ] && [ -n "$o" ] && ok "help 不需要 SANDBOX_BASE" || bad "help 在缺 SANDBOX_BASE 时失败"
 o=$(env -u SANDBOX_BASE "$AIO" exec --help 2>&1); rc=$?
 [ "$rc" -eq 0 ] && [ -n "$o" ] && ok "exec --help 不需要 SANDBOX_BASE" || bad "exec --help 在缺 SANDBOX_BASE 时失败"
+o=$(env -u SANDBOX_BASE "$AIO" mcp-server --help 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ -n "$o" ] && ok "mcp-server --help 不需要 SANDBOX_BASE 且退出码为 0" || bad "mcp-server --help 在缺 SANDBOX_BASE 时失败"
 
 echo "== 7. version 带仓库与构建信息 =="
 "$CUBE" version 2>&1 | grep -q 'github.com/otaku-say/sandbox-cli' \
