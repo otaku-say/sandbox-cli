@@ -23,18 +23,14 @@ fn tDesktopScreenshot(srv: *Server, _: *argmod.Args) anyerror!ToolResult {
         else => ToolResult.err(@errorName(e)),
     };
 
-    const max_img = 8 << 20; // 8 MiB limit
-    var raw_bytes = bytes;
-    var note: []const u8 = "";
-    if (raw_bytes.len > max_img) {
-        raw_bytes = raw_bytes[0..max_img];
-        note = "（图片大小超过 8 MiB 已截断）";
+    if (srv.sdk.last_truncated) {
+        return ToolResult.ok(try std.fmt.allocPrint(
+            srv.arena,
+            "桌面截图响应达到 {d} 字节读取上限（可能被截断），未作为图片返回；请降低分辨率后重试",
+            .{sdkmod.BUF},
+        ));
     }
-    const b64_len = std.base64.standard.Encoder.calcSize(raw_bytes.len);
-    const b64 = try srv.arena.alloc(u8, b64_len);
-    _ = std.base64.standard.Encoder.encode(b64, raw_bytes);
-    const summary = try std.fmt.allocPrint(srv.arena, "桌面截图成功（PNG，{d} 字节）{s}", .{ bytes.len, note });
-    return ToolResult.okImage(summary, b64);
+    return types.imageResult(srv, bytes, "桌面截图");
 }
 
 fn tDesktopCursor(srv: *Server, _: *argmod.Args) anyerror!ToolResult {

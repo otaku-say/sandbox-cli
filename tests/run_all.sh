@@ -17,7 +17,7 @@ CUBE="$ROOT/cube-cli/zig-out/bin/cube-cli"
 AIO="$ROOT/aiod-cli/zig-out/bin/aiod-cli"
 
 echo "=================================================="
-echo "== [1/5] 编译两个 CLI (Debug) =="
+echo "== [1/6] 编译两个 CLI (Debug) =="
 echo "=================================================="
 (cd "$ROOT/cube-cli" && zig build)
 (cd "$ROOT/aiod-cli" && zig build)
@@ -25,14 +25,14 @@ echo "[PASS] cube-cli & aiod-cli 编译成功"
 echo ""
 
 echo "=================================================="
-echo "== [2/5] 帮助体系冒烟测试 (tests/help_smoke.sh) =="
+echo "== [2/6] 帮助体系冒烟测试 (tests/help_smoke.sh) =="
 echo "=================================================="
 CUBE="$CUBE" AIO="$AIO" sh "$ROOT/tests/help_smoke.sh"
 echo "[PASS] help_smoke.sh 全部通过"
 echo ""
 
 echo "=================================================="
-echo "== [3/5] MCP 协议与纯净性测试 (tests/mcp_protocol_test.py) =="
+echo "== [3/6] MCP 协议与纯净性测试 (tests/mcp_protocol_test.py) =="
 echo "=================================================="
 python3 "$ROOT/tests/mcp_protocol_test.py" --bin "$CUBE" --kind cube --tools-min 37
 python3 "$ROOT/tests/mcp_protocol_test.py" --bin "$AIO" --kind aiod --tools-min 65
@@ -40,7 +40,7 @@ echo "[PASS] mcp_protocol_test.py (cube & aiod) 全部通过"
 echo ""
 
 echo "=================================================="
-echo "== [4/5] mock cube 工具测试套件 =="
+echo "== [4/6] mock cube 工具测试套件 =="
 echo "=================================================="
 if [ -f "$ROOT/tests/mcp_cube_tools_test.py" ]; then
     python3 "$ROOT/tests/mcp_cube_tools_test.py" --bin "$CUBE"
@@ -51,7 +51,7 @@ fi
 echo ""
 
 echo "=================================================="
-echo "== [5/5] mock aiod 工具测试套件 =="
+echo "== [5/6] mock aiod 工具测试套件 =="
 echo "=================================================="
 if [ -f "$ROOT/tests/mcp_aiod_tools_test.py" ]; then
     python3 "$ROOT/tests/mcp_aiod_tools_test.py" --bin "$AIO"
@@ -59,6 +59,13 @@ if [ -f "$ROOT/tests/mcp_aiod_tools_test.py" ]; then
 else
     echo "[SKIP] tests/mcp_aiod_tools_test.py 尚不存在，跳过"
 fi
+echo ""
+
+echo "=================================================="
+echo "== [6/6] 图片类工具结果边界（超限/非图片） =="
+echo "=================================================="
+python3 "$ROOT/tests/mcp_image_result_test.py" --bin "$AIO"
+echo "[PASS] mcp_image_result_test.py 全部通过"
 echo ""
 
 echo "=================================================="

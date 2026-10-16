@@ -32,6 +32,8 @@ pub const Sdk = struct {
     /// 最近一次失败现场（0 = 无）
     last_status: u16 = 0,
     last_body: []const u8 = "",
+    /// 响应体是否撑满调用方缓冲（= 很可能被截断，调用方应据此提示或改用分页/区间）
+    last_truncated: bool = false,
     last_config_error: bool = false,
 
     pub fn init(arena: std.mem.Allocator, client: *std.http.Client, io: std.Io, ov: Overrides) Sdk {
@@ -114,6 +116,7 @@ pub const Sdk = struct {
             res = try httpc.request(self.client, method, url, hs2[0..n2], payload, buf);
         }
 
+        self.last_truncated = buf.len > 0 and res.body.len >= buf.len;
         if (res.ok()) {
             self.last_status = 0;
             self.last_body = "";

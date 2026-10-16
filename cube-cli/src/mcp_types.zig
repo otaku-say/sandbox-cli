@@ -13,8 +13,10 @@ pub const max_text_bytes: usize = 4 << 20;
 
 pub const ToolResult = struct {
     text: []const u8 = "",
-    /// 可选图片内容（PNG base64）；与 text 同时返回时按 text + image 两块组织。
-    image_png_b64: ?[]const u8 = null,
+    /// 可选图片内容（base64）；与 text 同时返回时按 text + image 两块组织。
+    image_b64: ?[]const u8 = null,
+    /// 图片 MIME（仅 image_b64 非空时有意义）
+    image_mime: []const u8 = "image/png",
     is_error: bool = false,
 
     pub fn ok(text: []const u8) ToolResult {
@@ -22,7 +24,11 @@ pub const ToolResult = struct {
     }
 
     pub fn okImage(text: []const u8, b64: []const u8) ToolResult {
-        return .{ .text = text, .image_png_b64 = b64 };
+        return .{ .text = text, .image_b64 = b64 };
+    }
+
+    pub fn okImageMime(text: []const u8, b64: []const u8, mime: []const u8) ToolResult {
+        return .{ .text = text, .image_b64 = b64, .image_mime = mime };
     }
 
     pub fn err(text: []const u8) ToolResult {

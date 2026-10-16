@@ -27,6 +27,8 @@ pub const Sdk = struct {
     last_body: []const u8 = "",
     last_message: []const u8 = "",
     last_config_error: bool = false,
+    /// 响应体是否撑满调用方缓冲（= 很可能被截断）
+    last_truncated: bool = false,
 
     pub fn init(arena: std.mem.Allocator, client: *std.http.Client, io: std.Io, ov: Overrides) Sdk {
         return .{
@@ -85,6 +87,7 @@ pub const Sdk = struct {
             n += 1;
         }
         const res = try httpc.request(self.client, method, u, hs[0..n], payload, buf);
+        self.last_truncated = buf.len > 0 and res.body.len >= buf.len;
         if (!res.ok()) {
             self.last_status = res.status;
             self.last_body = self.arena.dupe(u8, res.body) catch "";

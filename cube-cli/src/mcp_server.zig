@@ -255,7 +255,16 @@ fn handleToolsCall(
             try writeError(a, out, id, -32603, try std.fmt.allocPrint(a, "Internal error：{s}", .{@errorName(e)}));
             return;
         };
-        try writeToolResult(a, out, id, res);
+        // 上游响应撑满缓冲 → 内容可能被截断，统一在结果里如实提示（避免 agent 用截断数据做判断）
+        var final = res;
+        if (sdk.last_truncated and !final.is_error and std.mem.indexOf(u8, final.text, "读取上限") == null) {
+            final.text = try std.fmt.allocPrint(
+                a,
+                "{s}\n（注意：上游响应达到 {d} 字节读取上限，内容可能不完整；请用区间/分页参数缩小范围）",
+                .{ final.text, sdkmod.BUF },
+            );
+        }
+        try writeToolResult(a, out, id, final);
         return;
     }
     try writeError(a, out, id, -32602, try std.fmt.allocPrint(a, "Unknown tool: {s}", .{name}));
@@ -283,17 +292,19 @@ fn writeToolsList(a: std.mem.Allocator, out: *std.Io.Writer, id: std.json.Value)
 
 fn writeToolResult(a: std.mem.Allocator, out: *std.Io.Writer, id: std.json.Value, res: types.ToolResult) !void {
     const text = types.clampText(a, res.text);
-    const cap = text.len * 6 + (if (res.image_png_b64) |b| b.len + 256 else 0) + 4096;
+    const cap = text.len * 6 + (if (res.image_b64) |b| b.len + 256 else 0) + 4096;
     var w = std.Io.Writer.fixed(try a.alloc(u8, cap));
     try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
     try writeId(&w, id);
     try w.writeAll(",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
     try argmod.writeEscaped(&w, text);
     try w.writeAll("\"}");
-    if (res.image_png_b64) |b64| {
+    if (res.image_b64) |b64| {
         try w.writeAll(",{\"type\":\"image\",\"data\":\"");
         try w.writeAll(b64);
-        try w.writeAll("\",\"mimeType\":\"image/png\"}");
+        try w.writeAll("\",\"mimeType\":\"");
+        try argmod.writeEscaped(&w, res.image_mime);
+        try w.writeAll("\"}");
     }
     try w.print("],\"isError\":{s}}}}}", .{if (res.is_error) "true" else "false"});
     try out.writeAll(w.buffered());
