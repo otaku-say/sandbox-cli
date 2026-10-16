@@ -178,6 +178,11 @@ pub const Sdk = struct {
 
     /// 数据面基址 + token 一把取（失败时 last_* 已有现场）。
     pub fn dataPlane(self: *Sdk, sid: []const u8, buf: []u8) !struct { base: []const u8, token: ?[]const u8 } {
+        if (self.api.len == 0) {
+            self.last_config_error = true;
+            self.missing_config_name = "CUBESANDBOX_API_URL";
+            return error.MissingConfig;
+        }
         if (self.proxy.len == 0) {
             self.last_config_error = true;
             self.missing_config_name = "CUBESANDBOX_PROXY_URL";
