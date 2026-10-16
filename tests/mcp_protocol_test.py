@@ -446,6 +446,65 @@ def t_eof(c):
     assert code == 0, f"EOF 后退出码应为 0，实际 {code}"
 
 
+@case("超大数值 id 保真（i64 溢出整数 / 溢出浮点 → number_string 分支）")
+def t_big_number_id(c):
+    # std.json 会把超出 i64 的整数、以及溢出的浮点数存成 number_string；
+    # 服务端必须原样回传（曾漏此分支 → 回成 null，破坏请求-响应绑定）
+    for ident_src in ['9223372036854775808', '18446744073709551615', '1e400']:
+        c.send_raw(('{"jsonrpc":"2.0","id":%s,"method":"ping"}\n' % ident_src).encode())
+        line = c.read_line()
+        assert ('"id":%s' % ident_src) in line.replace(" ", ""), f"大数值 id 未保真: {line[:120]}"
+
+
+@case("单行上限 32 MiB（>8 MiB 参数不应被拒收）")
+def t_over_8mib_message(c, tools):
+    name = next((t["name"] for t in tools if "content" in t["inputSchema"].get("properties", {})),
+                tools[0]["name"])
+    payload = "A" * (9 << 20)   # JSON 包装后约 9 MiB，旧上限 8 MiB 会直接拒收
+    c.send({"jsonrpc": "2.0", "id": 7001, "method": "tools/call",
+            "params": {"name": name, "arguments": {"content": payload}}})
+    r = c.read_json()
+    assert r.get("id") == 7001, f"9 MiB 请求未被正常处理: {str(r)[:160]}"
+    err = r.get("error") or {}
+    assert "消息过大" not in str(err.get("message", "")), f"9 MiB 请求被上限拒收: {err}"
+
+
+@case("参数类型错误 → isError 参数错误（不得伪装成 -32603 Internal error）")
+def t_arg_type_error_centralized(c, tools):
+    checked = 0
+    for t in tools:
+        props = t["inputSchema"].get("properties", {})
+        int_key = next((k for k, v in props.items()
+                        if isinstance(v, dict) and v.get("type") == "integer"), None)
+        if not int_key:
+            continue
+        args = {k: "x" for k in t["inputSchema"].get("required", [])}
+        args[int_key] = "not_a_number"
+        c.send({"jsonrpc": "2.0", "id": 8000 + checked, "method": "tools/call",
+                "params": {"name": t["name"], "arguments": args}})
+        r = c.read_json()
+        err = r.get("error") or {}
+        assert err.get("code") != -32603, f"{t['name']} 的 {int_key} 类型错误被报成 -32603: {r}"
+        res = r.get("result")
+        if res is not None and res.get("isError"):
+            text = res["content"][0]["text"]
+            assert ("参数错误" in text) or ("参数" in text), f"{t['name']} 参数错误文案异常: {text[:120]}"
+        checked += 1
+        if checked >= 3:
+            break
+    assert checked > 0, "没有带整数参数的工具，无法覆盖该用例"
+
+
+@case("结构非法的无 id 消息 → -32600（JSON-RPC 2.0：无法确定 id 时回 null）")
+def t_malformed_no_id(c):
+    # 规格：结构合法的通知一律零输出；但缺 jsonrpc / method 非法属 Invalid Request，
+    # 按 JSON-RPC 2.0 必须回 -32600 且 id 为 null（与「通知零输出」不冲突）。
+    c.send_raw(b'{"method":"my_notify"}\n')
+    r = c.read_json()
+    assert r.get("error", {}).get("code") == -32600 and r.get("id") is None, f"结构非法的无 id 消息处理异常: {r}"
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", required=True)
@@ -495,6 +554,14 @@ def main():
         ok("长消息边界（~1 MiB 参数）")
         t_concurrency_ordering(c)
         ok("连续 200 条请求顺序与合法性")
+        t_big_number_id(c)
+        ok("超大数值 id 保真（number_string）")
+        t_over_8mib_message(c, tools)
+        ok("单行上限 32 MiB（9 MiB 参数可处理）")
+        t_arg_type_error_centralized(c, tools)
+        ok("参数类型错误 → isError（非 -32603）")
+        t_malformed_no_id(c)
+        ok("结构非法的无 id 消息 → -32600")
         t_eof(c)
         ok("EOF 退出码 0")
     except Exception as e:  # noqa: BLE001

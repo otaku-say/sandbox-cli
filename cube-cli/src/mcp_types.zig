@@ -73,6 +73,16 @@ pub const Tool = struct {
 /// 截断保护：超过上限的文本截断并标注实际长度。
 pub fn clampText(arena: std.mem.Allocator, text: []const u8) []const u8 {
     if (text.len <= max_text_bytes) return text;
-    const kept = std.fmt.allocPrint(arena, "{s}\n（输出已截断，共 {d} 字节）", .{ text[0..max_text_bytes], text.len }) catch text[0..max_text_bytes];
+    // 截断必须回退到 UTF-8 字符边界：否则 stdout 会出现非法 UTF-8 字节序列，
+    // 严格按行解码的客户端会直接报错（协议纯净性的底线）。
+    const cut = utf8Boundary(text, max_text_bytes);
+    const kept = std.fmt.allocPrint(arena, "{s}\n（输出已截断，共 {d} 字节）", .{ text[0..cut], text.len }) catch text[0..cut];
     return kept;
+}
+
+/// 把「允许截断的位置」回退到 UTF-8 字符起始处（不劈开多字节字符）。
+pub fn utf8Boundary(s: []const u8, n: usize) usize {
+    var e = @min(n, s.len);
+    while (e > 0 and (s[e] & 0xC0) == 0x80) e -= 1;
+    return e;
 }

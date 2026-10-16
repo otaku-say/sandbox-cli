@@ -9,7 +9,7 @@ const httpc = @import("httpc.zig");
 const cfg = @import("cfg.zig");
 const envd = @import("envd.zig");
 
-pub const BUF = 2 << 20;
+pub const BUF = 8 << 20; // 与 aiod 对齐；工具层仍按 4 MiB 截断长文本
 
 /// 启动期配置覆盖（MCP flag 优先于环境变量）。
 pub const Overrides = struct {

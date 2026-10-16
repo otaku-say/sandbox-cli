@@ -49,7 +49,7 @@ fn tSnapRollback(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const snap = a.str(srv.arena, "snapshot_id") catch return srv.argError(a);
     const wait = a.boolOr(srv.arena, "wait", false) catch return srv.argError(a);
-    const timeout_s: u64 = @intCast(@max(0, a.intOr(srv.arena, "timeout", 60) catch 60));
+    const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 60)));
 
     const body = sdk_snapshot.snapshotRollback(srv.sdk, sid, snap, wait, timeout_s) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),

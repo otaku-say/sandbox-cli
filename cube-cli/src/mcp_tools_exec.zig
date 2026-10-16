@@ -15,7 +15,7 @@ fn tExec(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const cmd = a.str(srv.arena, "command") catch return srv.argError(a);
     const cwd = a.strOpt("cwd");
     const user = a.strOpt("user");
-    const timeout_s: u64 = @intCast(@max(0, a.intOr(srv.arena, "timeout", 0) catch 0));
+    const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 0)));
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
 
     const r = sdk_exec.sandboxExec(srv.sdk, sid, cmd, .{
@@ -46,7 +46,7 @@ fn tExecAsync(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const cmd = a.str(srv.arena, "command") catch return srv.argError(a);
     const cwd = a.strOpt("cwd");
     const user = a.strOpt("user");
-    const timeout_s: u64 = @intCast(@max(0, a.intOr(srv.arena, "timeout", 0) catch 0));
+    const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 0)));
     const no_stdin = a.boolOr(srv.arena, "no_stdin", false) catch return srv.argError(a);
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
 
@@ -67,9 +67,9 @@ fn tExecAsync(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tExecLogs(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const pid = a.intReq(srv.arena, "pid") catch return srv.argError(a);
-    const off_out: u64 = @intCast(@max(0, a.intOr(srv.arena, "offset", 0) catch 0));
-    const off_err: u64 = @intCast(@max(0, a.intOr(srv.arena, "stderr_offset", 0) catch 0));
-    const limit: u64 = @intCast(@max(0, a.intOr(srv.arena, "max", 0) catch 0));
+    const off_out: u64 = @intCast(@max(0, try a.intOr(srv.arena, "offset", 0)));
+    const off_err: u64 = @intCast(@max(0, try a.intOr(srv.arena, "stderr_offset", 0)));
+    const limit: u64 = @intCast(@max(0, try a.intOr(srv.arena, "max", 0)));
     const user = a.strOpt("user");
 
     const r = sdk_exec.sandboxExecLogs(srv.sdk, sid, pid, user, off_out, off_err, limit) catch |e| return switch (e) {
@@ -127,7 +127,7 @@ fn tCode(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const code = a.str(srv.arena, "code") catch return srv.argError(a);
     const mode = a.strOpt("mode") orelse "interp";
     const lang = a.strOpt("lang") orelse "python";
-    const timeout_s: u64 = @intCast(@max(0, a.intOr(srv.arena, "timeout", 0) catch 0));
+    const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 0)));
     const user = a.strOpt("user");
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
 

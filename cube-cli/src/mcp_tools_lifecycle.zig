@@ -90,7 +90,7 @@ fn tSandboxList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tSandboxInfo(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const wait_state = a.strOpt("wait");
-    const timeout_s: u64 = @intCast(@max(0, a.intOr(srv.arena, "timeout", 120) catch 120));
+    const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 120)));
     const body = sdk_lifecycle.sandboxInfo(srv.sdk, sid, .{ .wait_state = wait_state, .timeout_s = timeout_s }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -181,7 +181,7 @@ fn tSandboxPorts(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tSandboxClone(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
-    const n_raw = a.intOr(srv.arena, "n", 1) catch 1;
+    const n_raw = try a.intOr(srv.arena, "n", 1);
     const n: usize = @intCast(@max(1, n_raw));
     const timeout = try a.intOpt(srv.arena, "timeout");
     const note = a.strOpt("note");

@@ -16,7 +16,7 @@ const registry = @import("mcp_tools.zig");
 const cfg = @import("cfg.zig");
 
 /// 单条消息上限（读取缓冲容量）：超出回 -32600 并丢弃该行，服务不中断。
-const max_line_bytes: usize = 8 << 20;
+const max_line_bytes: usize = 32 << 20;
 const err_msg_max: usize = 4000;
 
 pub const Options = struct {
@@ -27,7 +27,7 @@ const instructions =
     "本服务把单个 CubeSandbox 的数据面能力（执行/文件/PTY/代码/浏览器/监听/桌面/MCP Hub）暴露为 MCP 工具。\\n" ++
     "配置经环境变量注入：SANDBOX_BASE（形如 https://<网关>/sandbox/<沙箱ID>/8080）、SANDBOX_KEY。\\n" ++
     "破坏性工具（exec_kill/file_delete/pty_delete 等）在 description 里已标注，请先与用户确认。\\n" ++
-    "单条消息上限 8 MiB；长输出会被截断到 4 MiB，增量读取请用 offset/start/end 类参数。";
+    "单条消息上限 32 MiB；长输出会被截断到 4 MiB，增量读取请用 offset/start/end 类参数。";
 
 const Next = union(enum) {
     line: []u8,
@@ -69,7 +69,7 @@ pub fn run(
             .eof => break,
             .too_large => {
                 // 超限消息已整行丢弃，回协议错误后继续服务
-                try writeError(a, out, null, -32600, "消息过大：单条 MCP 消息上限 8 MiB");
+                try writeError(a, out, null, -32600, "消息过大：单条 MCP 消息上限 32 MiB");
                 continue;
             },
             .line => |line| {
@@ -251,6 +251,12 @@ fn handleToolsCall(
         var args = argmod.Args.init(args_v);
         if (opts.verbose) std.debug.print("[mcp] tools/call {s}\n", .{name});
         const res = t.handler(&srv, &args) catch |e| {
+            // 参数校验失败（handler 里用 try 让 error.Arg 逃出来）→ 按协议给「可自纠正」的参数错误，
+            // 而不是伪装成服务端崩溃（-32603）。
+            if (e == error.Arg) {
+                try writeToolResult(a, out, id, srv.argError(&args));
+                return;
+            }
             std.debug.print("[mcp] 工具 {s} 内部异常：{s}\n", .{ name, @errorName(e) });
             try writeError(a, out, id, -32603, try std.fmt.allocPrint(a, "Internal error：{s}", .{@errorName(e)}));
             return;
@@ -347,7 +353,12 @@ fn writeError(a: std.mem.Allocator, out: *std.Io.Writer, id_opt: ?std.json.Value
 fn writeId(w: *std.Io.Writer, id: std.json.Value) !void {
     switch (id) {
         .integer => |i| try w.print("{d}", .{i}),
-        .float => |f| try w.print("{d}", .{f}),
+        .float => |f| {
+            // 非有限浮点在 JSON 里没有合法字面量，只能退化为 null
+            if (std.math.isFinite(f)) try w.print("{d}", .{f}) else try w.writeAll("null");
+        },
+        // 超出 i64 的整数 / 溢出的浮点数会被 std.json 解析成 number_string —— 必须原样回传（id 保真）
+        .number_string => |ns| try w.writeAll(ns),
         .string => |s| {
             try w.writeAll("\"");
             try argmod.writeEscaped(w, s);
