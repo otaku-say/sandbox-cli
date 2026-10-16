@@ -26,6 +26,7 @@ const cmd_raw = @import("cmd_raw.zig");
 const cmd_connect = @import("cmd_connect.zig");
 const cmd_proc = @import("cmd_proc.zig");
 const cmd_pty = @import("cmd_pty.zig");
+const cmd_mcp = @import("cmd_mcp.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -122,6 +123,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // ---- 第二批（SDK 全量对齐）：异步执行族 / PTY 原语 ----
     if (try cmd_proc.dispatch(&ctx, cmd, args)) return;
     if (try cmd_pty.dispatch(&ctx, cmd, args)) return;
+    if (try cmd_mcp.dispatch(&ctx, cmd, args)) return;
 
     try help.printUnknown(out, cmd);
     exitWith(out, 1);

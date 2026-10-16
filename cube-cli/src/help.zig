@@ -877,6 +877,22 @@ pub const table = [_]Entry{
         \\示例:  cube-cli pty-resize $SID 123 --rows=40 --cols=120
         ,
     },
+    // ---------------- MCP（Agent 接口） ----------------
+    .{
+        .name = "mcp-server",
+        .group = 5,
+        .brief = "以 MCP Server（stdio）方式运行（Agent 接口）",
+        .detail =
+        \\用途:  把本 CLI 的能力以 MCP（Model Context Protocol）stdio 服务暴露给 Agent：
+        \\       stdin 读 JSON-RPC 2.0 请求，stdout 只写协议消息（绝对无 banner/日志）。
+        \\用法:  cube-cli mcp-server [--api-url=<URL>] [--key=<KEY>] [--proxy=<URL>] [--verbose]
+        \\参数:  --api-url= / --key= / --proxy=  覆盖对应的 CUBESANDBOX_* 环境变量。
+        \\       --verbose  诊断信息打到 stderr（stdout 永远只有协议消息）。
+        \\       MCP Client 配置示例：{"command":"cube-cli","args":["mcp-server"],"env":{...}}
+        \\方法:  initialize / notifications/initialized / ping / tools/list / tools/call。
+        \\注意:  服务模式下缺配置不会退出，工具调用时返回可读错误；--help 不受纯净约束。
+        ,
+    },
 };
 
 pub fn isHelpArg(a: []const u8) bool {
