@@ -355,6 +355,7 @@ fn clampUtf8(s: []const u8, n: usize) []const u8 {
 }
 
 comptime {
+    @setEvalBranchQuota(50_000);
     // 保证工具名唯一（编译期门禁：重名直接编译失败）
     for (registry.tools, 0..) |t, i| {
         for (registry.tools[i + 1 ..]) |u| {

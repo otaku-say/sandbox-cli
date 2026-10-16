@@ -11,6 +11,9 @@ const httpc = @import("httpc.zig");
 const envd = @import("envd.zig");
 const connect = @import("connect.zig");
 const jsonfmt = @import("jsonfmt.zig");
+const cfg = @import("cfg.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_files = @import("sdk_files.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 8 << 20;
@@ -49,14 +52,18 @@ fn fail(c: *Ctx, res: httpc.Response) !void {
     return error.HttpError;
 }
 
-/// cat <sid> <path>  —— 输出文件内容
+/// cat <sid> <path>  —— 输出文件内容（SDK 改造）
 fn cmdCat(c: *Ctx, a: util.Args) !void {
     const sid = a.at(0) orelse return error.MissingArg;
     const path = a.at(1) orelse return error.MissingArg;
-    const t = try target(c, sid);
-    const res = try envd.readFile(c.arena, c.client, t.base, t.token, a.get("user"), path, t.buf);
-    if (!res.ok()) return fail(c, res);
-    try c.out.print("{s}", .{res.body});
+    var s = sdkmod.Sdk.init(c.arena, c.client, c.io, .{ .api = c.api, .key = c.key, .proxy = cfg.proxyURL() });
+    const content = sdk_files.fileRead(&s, sid, path, a.get("user")) catch |e| {
+        if (e == error.HttpError) {
+            try c.out.print("HTTP {d}: {s}\n", .{ s.last_status, s.last_body });
+        }
+        return e;
+    };
+    try c.out.print("{s}", .{content});
 }
 
 /// write <sid> <本地文件|-> <远端路径>  —— 从本地（或 stdin）写入远端
