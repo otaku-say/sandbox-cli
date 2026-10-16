@@ -83,7 +83,14 @@ pub const Args = struct {
         const v = self.get(name) orelse return null;
         switch (v) {
             .integer => |i| return i,
-            .float => |f| return @intFromFloat(f),
+            .float => |f| {
+                // 防 NaN/越界把 @intFromFloat 变成 panic（panic = 服务进程直接死）
+                if (std.math.isNan(f) or f < -9.007199254740992e15 or f > 9.007199254740992e15) {
+                    self.setf(arena, "{s} 超出可表示的整数范围", .{name});
+                    return ArgError.Arg;
+                }
+                return @intFromFloat(f);
+            },
             .string => |s| {
                 const t = std.mem.trim(u8, s, " \t");
                 return std.fmt.parseInt(i64, t, 10) catch {

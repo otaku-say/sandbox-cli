@@ -6,6 +6,7 @@ const std = @import("std");
 const sdkmod = @import("sdk.zig");
 const httpc = @import("httpc.zig");
 const jsonfmt = @import("jsonfmt.zig");
+const envd = @import("envd.zig");
 
 const Sdk = sdkmod.Sdk;
 
@@ -125,39 +126,62 @@ pub fn sandboxSetTimeout(self: *Sdk, sid: []const u8, seconds: u64) ![]const u8 
     return self.arena.dupe(u8, res.body);
 }
 
-/// PUT /sandboxes/<id>/network
+/// PUT /sandboxes/<id>/network（**全量替换语义**，body 与 CLI `net` 完全一致）。
 pub const NetSpec = struct {
     internet: ?bool = null,
-    allow: ?[]const u8 = null,
-    deny: ?[]const u8 = null,
+    /// 出站放行域名（数组；与 CLI `--allow=a,b` 同义）
+    allow: []const []const u8 = &.{},
+    /// 出站拒绝域名（数组）
+    deny: []const []const u8 = &.{},
+    /// allowPublicTraffic
+    public: ?bool = null,
+    /// maskRequestHost
+    mask_host: ?[]const u8 = null,
 };
 
-pub fn sandboxSetNet(self: *Sdk, sid: []const u8, spec: NetSpec) !void {
+pub fn sandboxSetNet(self: *Sdk, sid: []const u8, spec: NetSpec) ![]const u8 {
     const path = try std.fmt.allocPrint(self.arena, "/sandboxes/{s}/network", .{sid});
     const buf = try self.arena.alloc(u8, sdkmod.BUF);
-    var w = std.Io.Writer.fixed(try self.arena.alloc(u8, 64 << 10));
+    var w = std.Io.Writer.fixed(try self.arena.alloc(u8, 1 << 16));
     try w.writeAll("{");
     var comma = false;
     if (spec.internet) |v| {
         try w.print("\"allowInternetAccess\":{s}", .{if (v) "true" else "false"});
         comma = true;
     }
-    if (spec.allow) |a| {
+    if (spec.allow.len > 0) {
         if (comma) try w.writeAll(",");
-        try w.print("\"allowOut\":\"{s}\"", .{try jsonfmt_qenc(self.arena, a)});
+        try w.writeAll("\"allowOut\":[");
+        for (spec.allow, 0..) |d, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.print("\"{s}\"", .{try envd.jsonEscape(self.arena, d)});
+        }
+        try w.writeAll("]");
         comma = true;
     }
-    if (spec.deny) |d| {
+    if (spec.deny.len > 0) {
         if (comma) try w.writeAll(",");
-        try w.print("\"denyOut\":\"{s}\"", .{try jsonfmt_qenc(self.arena, d)});
+        try w.writeAll("\"denyOut\":[");
+        for (spec.deny, 0..) |d, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.print("\"{s}\"", .{try envd.jsonEscape(self.arena, d)});
+        }
+        try w.writeAll("]");
+        comma = true;
+    }
+    if (spec.public) |v| {
+        if (comma) try w.writeAll(",");
+        try w.print("\"allowPublicTraffic\":{s}", .{if (v) "true" else "false"});
+        comma = true;
+    }
+    if (spec.mask_host) |v| {
+        if (comma) try w.writeAll(",");
+        try w.print("\"maskRequestHost\":\"{s}\"", .{try envd.jsonEscape(self.arena, v)});
         comma = true;
     }
     try w.writeAll("}");
-    _ = try self.control(.PUT, path, w.buffered(), buf);
-}
-
-fn jsonfmt_qenc(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
-    return jsonfmt.qenc(arena, s, false);
+    const res = try self.control(.PUT, path, w.buffered(), buf);
+    return self.arena.dupe(u8, res.body);
 }
 
 // ---------------- rm（带生命周期互斥重试） ----------------

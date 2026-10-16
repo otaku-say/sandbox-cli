@@ -69,7 +69,7 @@ pub fn run(
             .eof => break,
             .too_large => {
                 // 超限消息已整行丢弃，回协议错误后继续服务
-                try writeError(out, null, -32600, "消息过大：单条 MCP 消息上限 8 MiB");
+                try writeError(a, out, null, -32600, "消息过大：单条 MCP 消息上限 8 MiB");
                 continue;
             },
             .line => |line| {
@@ -114,18 +114,18 @@ fn handleLine(
     line: []const u8,
 ) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, a, line, .{}) catch {
-        try writeError(out, null, -32700, "Parse error：消息不是合法 JSON");
+        try writeError(a, out, null, -32700, "Parse error：消息不是合法 JSON");
         return;
     };
     const v = parsed.value;
     switch (v) {
         .array => {
-            try writeError(out, null, -32600, "不支持批处理（JSON-RPC batch not supported）");
+            try writeError(a, out, null, -32600, "不支持批处理（JSON-RPC batch not supported）");
             return;
         },
         .object => {},
         else => {
-            try writeError(out, null, -32600, "Invalid Request：消息必须是 JSON 对象");
+            try writeError(a, out, null, -32600, "Invalid Request：消息必须是 JSON 对象");
             return;
         },
     }
@@ -147,7 +147,7 @@ fn handleLine(
         };
     };
     if (!jsonrpc_ok or method == null) {
-        try writeError(out, id_opt, -32600, "Invalid Request：jsonrpc 必须为 \"2.0\"，method 必须是字符串");
+        try writeError(a, out, id_opt, -32600, "Invalid Request：jsonrpc 必须为 \"2.0\"，method 必须是字符串");
         return;
     }
     const m = method.?;
@@ -167,11 +167,11 @@ fn handleLine(
             "{{\"protocolVersion\":\"{s}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"{s}\",\"version\":\"{s}\"}},\"instructions\":\"{s}\"}}",
             .{ pv, types.server_name, cfg.version, instructions },
         );
-        try writeRawResult(out, id, res);
+        try writeRawResult(a, out, id, res);
         return;
     }
     if (std.mem.eql(u8, m, "ping")) {
-        try writeRawResult(out, id, "{}");
+        try writeRawResult(a, out, id, "{}");
         return;
     }
     if (std.mem.eql(u8, m, "tools/list")) {
@@ -186,7 +186,7 @@ fn handleLine(
         if (opts.verbose) std.debug.print("[mcp] 忽略带 id 的通知：{s}\n", .{m});
         return;
     }
-    try writeError(out, id, -32601, try std.fmt.allocPrint(a, "Method not found: {s}", .{m}));
+    try writeError(a, out, id, -32601, try std.fmt.allocPrint(a, "Method not found: {s}", .{m}));
 }
 
 /// 协议版本协商：客户端版本在支持集合内则原样回，否则回服务端最新。
@@ -216,22 +216,22 @@ fn handleToolsCall(
     params: ?std.json.Value,
 ) !void {
     const p = params orelse {
-        try writeError(out, id, -32602, "Invalid params：tools/call 需要 params");
+        try writeError(a, out, id, -32602, "Invalid params：tools/call 需要 params");
         return;
     };
     if (p != .object) {
-        try writeError(out, id, -32602, "Invalid params：params 必须是对象");
+        try writeError(a, out, id, -32602, "Invalid params：params 必须是对象");
         return;
     }
     const po = p.object;
     const name_v = po.get("name") orelse {
-        try writeError(out, id, -32602, "Invalid params：缺少 name");
+        try writeError(a, out, id, -32602, "Invalid params：缺少 name");
         return;
     };
     const name = switch (name_v) {
         .string => |s| s,
         else => {
-            try writeError(out, id, -32602, "Invalid params：name 必须是字符串");
+            try writeError(a, out, id, -32602, "Invalid params：name 必须是字符串");
             return;
         },
     };
@@ -239,7 +239,7 @@ fn handleToolsCall(
     switch (args_v) {
         .null, .object => {},
         else => {
-            try writeError(out, id, -32602, "Invalid params：arguments 必须是对象");
+            try writeError(a, out, id, -32602, "Invalid params：arguments 必须是对象");
             return;
         },
     }
@@ -252,17 +252,20 @@ fn handleToolsCall(
         if (opts.verbose) std.debug.print("[mcp] tools/call {s}\n", .{name});
         const res = t.handler(&srv, &args) catch |e| {
             std.debug.print("[mcp] 工具 {s} 内部异常：{s}\n", .{ name, @errorName(e) });
-            try writeError(out, id, -32603, try std.fmt.allocPrint(a, "Internal error：{s}", .{@errorName(e)}));
+            try writeError(a, out, id, -32603, try std.fmt.allocPrint(a, "Internal error：{s}", .{@errorName(e)}));
             return;
         };
         try writeToolResult(a, out, id, res);
         return;
     }
-    try writeError(out, id, -32602, try std.fmt.allocPrint(a, "Unknown tool: {s}", .{name}));
+    try writeError(a, out, id, -32602, try std.fmt.allocPrint(a, "Unknown tool: {s}", .{name}));
 }
 
 fn writeToolsList(a: std.mem.Allocator, out: *std.Io.Writer, id: std.json.Value) !void {
-    var w = std.Io.Writer.fixed(try a.alloc(u8, 2 << 20));
+    // 容量按内容算：name/description 转义最坏 6 倍，schema 原样
+    var need: usize = 64 + idCap(id);
+    for (registry.tools) |t| need += t.name.len * 6 + t.description.len * 6 + t.schema.len + 64;
+    var w = std.Io.Writer.fixed(try a.alloc(u8, need));
     try w.writeAll("{\"tools\":[");
     for (registry.tools, 0..) |t, i| {
         if (i > 0) try w.writeAll(",");
@@ -275,12 +278,12 @@ fn writeToolsList(a: std.mem.Allocator, out: *std.Io.Writer, id: std.json.Value)
         try w.writeAll("}");
     }
     try w.writeAll("]}");
-    try writeRawResult(out, id, w.buffered());
+    try writeRawResult(a, out, id, w.buffered());
 }
 
 fn writeToolResult(a: std.mem.Allocator, out: *std.Io.Writer, id: std.json.Value, res: types.ToolResult) !void {
     const text = types.clampText(a, res.text);
-    const cap = text.len * 2 + 65536;
+    const cap = text.len * 6 + (if (res.image_png_b64) |b| b.len + 256 else 0) + 4096;
     var w = std.Io.Writer.fixed(try a.alloc(u8, cap));
     try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
     try writeId(&w, id);
@@ -298,22 +301,29 @@ fn writeToolResult(a: std.mem.Allocator, out: *std.Io.Writer, id: std.json.Value
     try out.flush();
 }
 
-fn writeRawResult(out: *std.Io.Writer, id: std.json.Value, result_json: []const u8) !void {
-    try out.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-    var idbuf: [512]u8 = undefined;
-    var iw = std.Io.Writer.fixed(&idbuf);
-    try writeId(&iw, id);
-    try out.writeAll(iw.buffered());
-    try out.writeAll(",\"result\":");
+fn writeRawResult(a: std.mem.Allocator, out: *std.Io.Writer, id: std.json.Value, result_json: []const u8) !void {
+    var w = std.Io.Writer.fixed(try a.alloc(u8, idCap(id) + 64));
+    try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+    try writeId(&w, id);
+    try w.writeAll(",\"result\":");
+    try out.writeAll(w.buffered());
     try out.writeAll(result_json);
     try out.writeAll("}\n");
     try out.flush();
 }
 
-fn writeError(out: *std.Io.Writer, id_opt: ?std.json.Value, code: i32, msg: []const u8) !void {
+/// id 序列化所需的缓冲（字符串 id 转义最坏 6 倍；大整数也留足）。
+fn idCap(id: std.json.Value) usize {
+    return switch (id) {
+        .string => |sv| sv.len * 6 + 32,
+        else => 32,
+    };
+}
+
+fn writeError(a: std.mem.Allocator, out: *std.Io.Writer, id_opt: ?std.json.Value, code: i32, msg: []const u8) !void {
     const m = clampUtf8(msg, err_msg_max);
-    var buf: [16384]u8 = undefined;
-    var w = std.Io.Writer.fixed(&buf);
+    const cap = m.len * 6 + idCap(id_opt orelse .null) + 128;
+    var w = std.Io.Writer.fixed(try a.alloc(u8, cap));
     try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
     if (id_opt) |idv| try writeId(&w, idv) else try w.writeAll("null");
     try w.print(",\"error\":{{\"code\":{d},\"message\":\"", .{code});
