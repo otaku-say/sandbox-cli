@@ -222,7 +222,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Check CLI command parity against pre-refactor binary")
     parser.add_argument("--before", default="/tmp/bin-before/cube-cli", help="Path to pre-refactor binary")
     parser.add_argument("--after", default="/tmp/ws-refactor/cube-cli/zig-out/bin/cube-cli", help="Path to post-refactor binary")
+
     args = parser.parse_args()
+
+    if not Path(args.before).exists():
+        print(f"[SKIP] 基线二进制不存在（{args.before}）：对拍需要改造前的 cube-cli，"
+              f"可用 git worktree add /tmp/ws-before <ref> 并构建后传 --before")
+        sys.exit(0)
 
     ok = run_tests(args.before, args.after)
     sys.exit(0 if ok else 1)

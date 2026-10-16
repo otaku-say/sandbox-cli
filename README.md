@@ -150,8 +150,21 @@ cd .. && python3 scripts/gen-docs.py --cube cube-cli/zig-out/bin/cube-cli --aio 
 ### 冒烟测试
 
 ```bash
-sh tests/help_smoke.sh          # 帮助体系 + new --help 不建沙箱，可重复执行
+sh tests/run_all.sh             # 一键全量（8 步）：构建 → help 冒烟 → MCP 协议/纯净性 → 工具 mock → 图片边界 → 大文本 UTF-8 → CLI 对拍
+sh tests/help_smoke.sh          # 只跑帮助体系 + new --help 不建沙箱
 ```
+
+`tests/` 目录（全部只用 Python 3 标准库，不依赖网络：
+
+| 文件 | 覆盖 |
+|---|---|
+| `mcp_protocol_test.py` | MCP 协议与 stdout 纯净性（20 组：版本协商、通知零输出、错误码矩阵、id 保真、畸形输入、32 MiB 边界、200 条顺序一致性…） |
+| `mock_cube_server.py` / `mcp_cube_tools_test.py` | cube-cli 37 个工具：MCP 结果 + mock 实收请求双向断言（含安全门禁「未确认零请求」） |
+| `mock_aiod_server.py` / `mcp_aiod_tools_test.py` | aiod-cli 65 个工具：同构断言 + 信封/HTTP/缺参三类异常映射 |
+| `mcp_image_result_test.py` | 图片类工具边界：正常 PNG / 超 8 MiB / 非图片魔数 |
+| `mcp_big_output_test.py` | 超 4 MiB 文本截断的 UTF-8 安全性（截断点落在汉字中间） |
+| `mcp_live_smoke.py` | **真实环境**全链路验收（创建→执行→文件往返→快照→销毁），需真实凭据，手工跑 |
+| `cmd_parity_smoke.py` | CLI 门面改造前后逐字节对拍（需 `--before <改造前二进制>`；缺基线自动 SKIP） |
 
 ### 漂移检查（跟进上游）
 
