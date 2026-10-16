@@ -888,8 +888,9 @@ pub const table = [_]Entry{
         \\用法:  cube-cli mcp-server [--api-url=<URL>] [--key=<KEY>] [--proxy=<URL>] [--verbose]
         \\参数:  --api-url= / --key= / --proxy=  覆盖对应的 CUBESANDBOX_* 环境变量。
         \\       --verbose  诊断信息打到 stderr（stdout 永远只有协议消息）。
-        \\       MCP Client 配置示例：{"command":"cube-cli","args":["mcp-server"],"env":{...}}
         \\方法:  initialize / notifications/initialized / ping / tools/list / tools/call。
+        \\示例:  MCP Client 配置（Claude Desktop / Cursor）：
+        \\       {"command":"cube-cli","args":["mcp-server"],"env":{"CUBESANDBOX_API_URL":"...","CUBESANDBOX_API_KEY":"..."}}
         \\注意:  服务模式下缺配置不会退出，工具调用时返回可读错误；--help 不受纯净约束。
         ,
     },
