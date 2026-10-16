@@ -222,8 +222,8 @@ pub fn sandboxExecKill(self: *Sdk, sid: []const u8, pid: i64, user: ?[]const u8,
     const dp = try self.dataPlane(sid, buf);
     const s = sig orelse "SIGNAL_SIGKILL";
     const res = try envd.sendSignal(self.arena, self.client, dp.base, dp.token, user, pid, s, buf);
+    self.last_status = res.status;
     if (!res.ok() and res.status != 404) {
-        self.last_status = res.status;
         self.last_body = try self.arena.dupe(u8, res.body);
         return error.HttpError;
     }

@@ -9,7 +9,7 @@ const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const envd = @import("envd.zig");
 const jsonfmt = @import("jsonfmt.zig");
-
+const sdkmod = @import("sdk.zig");
 const Ctx = ctxmod.Ctx;
 
 const CAP_BASE = "shell,file,code";
@@ -108,9 +108,12 @@ fn detailPorts(c: *Ctx, id: []const u8, buf: []u8) ![]u16 {
 }
 
 fn fetchTemplates(c: *Ctx) ![]Tpl {
-    const buf = try c.arena.alloc(u8, 2 << 20);
-    const res = try c.control(.GET, "/templates", null, buf);
-    const parsed = std.json.parseFromSlice([]Tpl, c.arena, res.body, .{ .ignore_unknown_fields = true }) catch |e| {
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_template.templateList(&s) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
+    const parsed = std.json.parseFromSlice([]Tpl, c.arena, body, .{ .ignore_unknown_fields = true }) catch |e| {
         try c.out.print("JSON 解析失败: {t}\n", .{e});
         return e;
     };
@@ -127,8 +130,12 @@ fn tplLs(c: *Ctx, a: util.Args) !void {
     const has_filter = (f_itype != null) or (f_status != null);
 
     if (a.has("json") and !has_filter) {
-        const res = try c.control(.GET, "/templates", null, buf);
-        try c.out.print("{s}\n", .{res.body});
+        var s = sdkmod.Sdk.fromCtx(c);
+        const body = sdk_template.templateList(&s) catch |e| {
+            try s.printErr(c.out, e);
+            return e;
+        };
+        try c.out.print("{s}\n", .{body});
         return;
     }
     const list = try fetchTemplates(c);
@@ -535,17 +542,19 @@ fn probeTemplate(c: *Ctx, tpl_id: []const u8) !ProbeOut {
 /// tpl-info <模板ID> [--json]：模板详情摘要（--json 原样输出）。
 fn tplInfo(c: *Ctx, a: util.Args) !void {
     const id = a.at(0) orelse return error.MissingArg;
-    const buf = try c.arena.alloc(u8, 2 << 20);
-    const path = try std.fmt.allocPrint(c.arena, "/templates/{s}", .{id});
-    const res = try c.control(.GET, path, null, buf);
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_template.templateInfo(&s, id) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     if (a.has("json")) {
-        try c.out.print("{s}\n", .{res.body});
+        try c.out.print("{s}\n", .{body});
         return;
     }
-    const st = envd.extractString(c.arena, res.body, "status") orelse "?";
-    const img = envd.extractString(c.arena, res.body, "imageInfo") orelse "?";
-    const created = envd.extractString(c.arena, res.body, "createdAt") orelse "?";
-    const ports = envd.extractString(c.arena, res.body, "com.exposed_ports") orelse "-";
+    const st = envd.extractString(c.arena, body, "status") orelse "?";
+    const img = envd.extractString(c.arena, body, "imageInfo") orelse "?";
+    const created = envd.extractString(c.arena, body, "createdAt") orelse "?";
+    const ports = envd.extractString(c.arena, body, "com.exposed_ports") orelse "-";
     try c.out.print("模板ID   : {s}\n", .{id});
     try c.out.print("状态     : {s}\n", .{st});
     try c.out.print("镜像     : {s}\n", .{img});

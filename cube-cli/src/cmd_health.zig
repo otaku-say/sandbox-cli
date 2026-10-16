@@ -3,6 +3,8 @@ const std = @import("std");
 const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const jsonfmt = @import("jsonfmt.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_lifecycle = @import("sdk_lifecycle.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -20,19 +22,22 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
 
 pub fn run(c: *Ctx, argv: []const []const u8) !void {
     const a = try util.parse(c.arena, argv);
-    const buf = try c.arena.alloc(u8, BUF);
-    const res = try c.control(.GET, "/health", null, buf);
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_lifecycle.systemHealth(&s) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     if (a.has("json")) {
-        try c.out.print("{s}\n", .{res.body});
+        try c.out.print("{s}\n", .{body});
         return;
     }
-    const v = std.json.parseFromSlice(std.json.Value, c.arena, res.body, .{}) catch {
-        try c.out.print("{s}\n", .{res.body});
+    const v = std.json.parseFromSlice(std.json.Value, c.arena, body, .{}) catch {
+        try c.out.print("{s}\n", .{body});
         return;
     };
-    const status = if (jsonfmt.objGet(v.value, "status")) |s| (jsonfmt.valueStr(c.arena, s) catch "-") else "-";
-    const count_s = if (jsonfmt.objGet(v.value, "sandboxes")) |s| blk: {
-        const sv = s;
+    const status = if (jsonfmt.objGet(v.value, "status")) |st| (jsonfmt.valueStr(c.arena, st) catch "-") else "-";
+    const count_s = if (jsonfmt.objGet(v.value, "sandboxes")) |sb| blk: {
+        const sv = sb;
         if (sv == .integer) {
             break :blk std.fmt.allocPrint(c.arena, "{d}", .{sv.integer}) catch "-";
         }

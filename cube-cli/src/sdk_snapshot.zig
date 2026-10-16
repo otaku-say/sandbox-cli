@@ -28,8 +28,13 @@ pub const SnapListQuery = struct {
     next_token: ?[]const u8 = null,
 };
 
-/// 查询快照列表（GET /snapshots?...）。
-pub fn snapshotList(self: *Sdk, q: SnapListQuery) ![]const u8 {
+pub const SnapListResult = struct {
+    body: []const u8,
+    next_token: ?[]const u8 = null,
+};
+
+/// 查询快照列表（GET /snapshots?...），带翻页 token。
+pub fn snapshotListWithToken(self: *Sdk, q: SnapListQuery) !SnapListResult {
     var w = std.Io.Writer.fixed(try self.arena.alloc(u8, 4096));
     try w.writeAll("/snapshots");
     var sep: u8 = '?';
@@ -55,7 +60,14 @@ pub fn snapshotList(self: *Sdk, q: SnapListQuery) ![]const u8 {
     }
     const buf = try self.arena.alloc(u8, sdkmod.BUF);
     const res = try self.control(.GET, w.buffered(), null, buf);
-    return self.arena.dupe(u8, res.body);
+    const nt: ?[]const u8 = if (res.header("x-next-token")) |v| (if (v.len > 0) try self.arena.dupe(u8, v) else null) else null;
+    return .{ .body = try self.arena.dupe(u8, res.body), .next_token = nt };
+}
+
+/// 查询快照列表（GET /snapshots?...）。返回响应体 JSON。
+pub fn snapshotList(self: *Sdk, q: SnapListQuery) ![]const u8 {
+    const r = try snapshotListWithToken(self, q);
+    return r.body;
 }
 
 /// 回滚沙箱到指定快照（POST /sandboxes/<id>/rollback）。

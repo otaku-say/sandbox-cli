@@ -9,6 +9,8 @@ const std = @import("std");
 const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const jsonfmt = @import("jsonfmt.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_lifecycle = @import("sdk_lifecycle.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -40,54 +42,38 @@ pub fn run(c: *Ctx, argv: []const []const u8) !void {
         use_v2 = true;
     }
 
-    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 4096));
-    var n: usize = 0;
-    // metadata 过滤：可重复给 --metadata，也可逗号分隔
+    var m_list: std.ArrayList([]const u8) = .empty;
     for (a.flags) |kv| {
         if (!std.mem.eql(u8, kv[0], "metadata")) continue;
         var it = std.mem.tokenizeScalar(u8, kv[1], ',');
         while (it.next()) |kv2| {
             if (kv2.len == 0) continue;
-            if (n > 0) try w.writeAll("&");
-            n += 1;
-            try w.print("metadata={s}", .{try jsonfmt.qenc(c.arena, kv2, true)});
+            try m_list.append(c.arena, kv2);
         }
     }
-    if (a.get("state")) |s| {
-        if (n > 0) try w.writeAll("&");
-        n += 1;
-        try w.print("state={s}", .{try jsonfmt.qenc(c.arena, s, false)});
-    }
-    if (use_v2) {
-        if (a.get("limit")) |l| {
-            if (n > 0) try w.writeAll("&");
-            n += 1;
-            try w.print("limit={s}", .{l});
-        }
-    } else if (a.get("limit")) |l| {
-        std.debug.print("[ls] 提示：v1 的 limit 由服务端固定为 200，--limit={s} 未生效\n", .{l});
+    if (!use_v2 and a.get("limit") != null) {
+        std.debug.print("[ls] 提示：v1 的 limit 由服务端固定为 200，--limit={s} 未生效\n", .{a.get("limit").?});
     }
 
-    const path = if (n > 0)
-        try std.fmt.allocPrint(c.arena, "{s}?{s}", .{ if (use_v2) "/v2/sandboxes" else "/sandboxes", w.buffered() })
-    else
-        (if (use_v2) "/v2/sandboxes" else "/sandboxes");
-
-    const buf = try c.arena.alloc(u8, BUF);
-    const res = try c.control(.GET, path, null, buf);
-
-    if (res.header("x-next-token")) |t| {
-        if (t.len > 0) std.debug.print("[ls] x-next-token={s}（上游分页为桩实现，未继续翻页）\n", .{t});
-    }
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_lifecycle.sandboxList(&s, .{
+        .metadata = m_list.items,
+        .state = a.get("state"),
+        .limit = a.get("limit"),
+        .v2 = use_v2,
+    }) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
 
     if (a.has("json")) {
-        try c.out.print("{s}\n", .{res.body});
+        try c.out.print("{s}\n", .{body});
         return;
     }
 
     // v1 返回裸数组；v2 可能包一层 {"sandboxes":[...]} —— 两种都吃
-    const v = std.json.parseFromSlice(std.json.Value, c.arena, res.body, .{}) catch {
-        try c.out.print("{s}\n", .{res.body});
+    const v = std.json.parseFromSlice(std.json.Value, c.arena, body, .{}) catch {
+        try c.out.print("{s}\n", .{body});
         return;
     };
     var items: []const std.json.Value = &.{};

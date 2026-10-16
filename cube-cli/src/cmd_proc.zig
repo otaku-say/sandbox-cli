@@ -19,6 +19,8 @@ const util = @import("util.zig");
 const envd = @import("envd.zig");
 const httpc = @import("httpc.zig");
 const cfg = @import("cfg.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_exec = @import("sdk_exec.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 8 << 20;
@@ -178,66 +180,37 @@ fn cmdExecAsync(c: *Ctx, a: util.Args) !void {
         return error.MissingArg;
     }
 
-    const buf = try c.arena.alloc(u8, BUF);
-    const token = try c.connectToken(sid, buf);
-    const base = try c.envdBase(sid);
-
-    const tag = try newTag(c);
-    const out = try std.fmt.allocPrint(c.arena, "{s}/{s}.out", .{ EXEC_DIR, tag });
-    const err = try std.fmt.allocPrint(c.arena, "{s}/{s}.err", .{ EXEC_DIR, tag });
-    const ex = try std.fmt.allocPrint(c.arena, "{s}/{s}.exit", .{ EXEC_DIR, tag });
-
-    // 包装：输出落盘 + 退出码落盘 → exec-logs 可增量拉取
-    var inner: []const u8 = cmdtext;
+    var timeout_s: u64 = 0;
     if (a.get("timeout")) |t| {
         if (std.fmt.parseInt(u64, t, 10)) |secs| {
-            if (secs > 0) {
-                inner = try std.fmt.allocPrint(c.arena, "timeout -k 5 {d} bash -c {s}", .{ secs, try util.shellQuote(c.arena, cmdtext) });
-            }
+            timeout_s = secs;
         } else |_| {}
     }
-    const wrapper = try std.fmt.allocPrint(
-        c.arena,
-        "mkdir -p {s} 2>/dev/null; {{ {s} ; }} > {s} 2> {s}; echo $? > {s}",
-        .{ EXEC_DIR, inner, out, err, ex },
-    );
-
     const envs = try util.envsJson(c.arena, a.flags);
-    const cwd_part = if (a.get("cwd")) |wd|
-        try std.fmt.allocPrint(c.arena, ",\"cwd\":\"{s}\"", .{try envd.jsonEscape(c.arena, wd)})
-    else
-        "";
-    const stdin_flag: []const u8 = if (a.has("no-stdin")) "false" else "true";
-    const payload = try std.fmt.allocPrint(
-        c.arena,
-        "{{\"process\":{{\"cmd\":\"/bin/bash\",\"args\":[\"-l\",\"-c\",\"{s}\"],\"envs\":{{{s}}}{s}}},\"stdin\":{s}}}",
-        .{ try envd.jsonEscape(c.arena, wrapper), envs, cwd_part, stdin_flag },
-    );
-
-    const res = try envd.startDetached(c.arena, c.client, base, token, a.get("user"), payload, buf);
-    if (!res.ok()) {
-        try c.out.print("启动失败：HTTP {d}: {s}\n", .{ res.status, res.body });
-        return error.HttpError;
-    }
-    const pid32 = envd.extractInt(res.body, "pid") orelse {
-        try c.out.print("启动失败：未收到 pid（{s}）\n", .{res.body});
-        return error.NoPid;
-    };
-    const pid: i64 = pid32;
-
-    const meta = try std.fmt.allocPrint(
-        c.arena,
-        "{{\"pid\":{d},\"tag\":\"{s}\",\"out\":\"{s}\",\"err\":\"{s}\",\"exit\":\"{s}\",\"cmd\":\"{s}\"}}",
-        .{ pid, tag, out, err, ex, try envd.jsonEscape(c.arena, cmdtext) },
-    );
-    writeMeta(c, base, token, a.get("user"), EXEC_DIR, pid, meta, buf) catch {
-        std.debug.print("[exec-async] 警告：会话元信息写入失败，exec-logs 可能找不到日志\n", .{});
+    var s = sdkmod.Sdk.fromCtx(c);
+    const r = sdk_exec.sandboxExecAsync(&s, sid, cmdtext, .{
+        .cwd = a.get("cwd"),
+        .env_json = if (envs.len > 0) envs else null,
+        .user = a.get("user"),
+        .timeout_s = timeout_s,
+    }, a.has("no-stdin")) catch |e| {
+        if (e == error.MissingConfig) {
+            try c.out.print("{s}\n", .{s.failText()});
+            return e;
+        } else if (e == error.HttpError) {
+            try c.out.print("启动失败：HTTP {d}: {s}\n", .{ s.last_status, s.last_body });
+            return error.HttpError;
+        } else if (e == error.NoPid) {
+            try c.out.print("启动失败：未收到 pid（{s}）\n", .{s.last_body});
+            return error.NoPid;
+        }
+        return e;
     };
 
-    try c.out.print("pid {d}\n", .{pid});
-    try c.out.print("  stdout {s}\n", .{out});
-    try c.out.print("  stderr {s}\n", .{err});
-    try c.out.print("  拉日志 cube-cli exec-logs {s} {d} --follow ｜ 输入 cube-cli exec-stdin {s} {d} <数据> ｜ 结束 cube-cli exec-kill {s} {d}\n", .{ sid, pid, sid, pid, sid, pid });
+    try c.out.print("pid {d}\n", .{r.pid});
+    try c.out.print("  stdout {s}\n", .{r.stdout_file});
+    try c.out.print("  stderr {s}\n", .{r.stderr_file});
+    try c.out.print("  拉日志 cube-cli exec-logs {s} {d} --follow ｜ 输入 cube-cli exec-stdin {s} {d} <数据> ｜ 结束 cube-cli exec-kill {s} {d}\n", .{ sid, r.pid, sid, r.pid, sid, r.pid });
 }
 
 /// exec-logs <sid> <pid> [--mode=stdout|stderr|both] [--offset=] [--limit=] [--follow]
@@ -249,15 +222,6 @@ fn cmdExecLogs(c: *Ctx, a: util.Args) !void {
         return error.BadArg;
     };
 
-    const buf = try c.arena.alloc(u8, BUF);
-    const token = try c.connectToken(sid, buf);
-    const base = try c.envdBase(sid);
-
-    const meta = loadMeta(c, base, token, a.get("user"), EXEC_DIR, pid, buf) catch {
-        try c.out.print("未找到 pid {d} 的执行记录（不是 exec-async 启动的？）\n", .{pid});
-        return error.NoMeta;
-    };
-
     const mode = a.get("mode") orelse "both";
     var off_out: u64 = if (a.get("offset")) |o| (std.fmt.parseInt(u64, o, 10) catch 0) else 0;
     var off_err: u64 = off_out;
@@ -265,36 +229,47 @@ fn cmdExecLogs(c: *Ctx, a: util.Args) !void {
     const follow = a.has("follow");
 
     var last_exit: ?i64 = null;
+    var last_alive = false;
+    var s = sdkmod.Sdk.fromCtx(c);
+
     while (true) {
+        const lr = sdk_exec.sandboxExecLogs(&s, sid, pid, a.get("user"), off_out, off_err, limit) catch |e| {
+            if (e == error.NoMeta) {
+                try c.out.print("未找到 pid {d} 的执行记录（不是 exec-async 启动的？）\n", .{pid});
+                return error.NoMeta;
+            }
+            try s.printErr(c.out, e);
+            return e;
+        };
+
         var fresh = false;
         if (!eq(mode, "stderr")) {
-            const d = try readDelta(c, base, token, a.get("user"), meta.out, off_out, limit, buf);
-            if (d.data.len > 0) {
-                try c.out.print("{s}", .{d.data});
-                off_out = d.next;
+            if (lr.stdout.len > 0) {
+                try c.out.print("{s}", .{lr.stdout});
+                off_out = lr.next_offset;
                 fresh = true;
             }
         }
         if (!eq(mode, "stdout")) {
-            const d = try readDelta(c, base, token, a.get("user"), meta.err, off_err, limit, buf);
-            if (d.data.len > 0) {
-                try c.out.print("\n--- stderr ---\n{s}", .{d.data});
-                off_err = d.next;
+            if (lr.stderr.len > 0) {
+                try c.out.print("\n--- stderr ---\n{s}", .{lr.stderr});
+                off_err = lr.next_stderr_offset;
                 fresh = true;
             }
         }
-        if (readExit(c, base, token, a.get("user"), meta.exit, buf)) |code| last_exit = code;
+        if (lr.exit_code) |code| last_exit = code;
+        last_alive = lr.is_alive;
 
         if (!follow) break;
         if (last_exit != null and !fresh) break;
-        if (!fresh and !pidAlive(c, base, token, a.get("user"), pid, buf)) break;
+        if (!fresh and !lr.is_alive) break;
         try std.Io.sleep(c.io, .fromMilliseconds(700), .awake);
     }
 
     try c.out.print("\n[exec-logs] stdout 偏移 {d} B；stderr 偏移 {d} B；", .{ off_out, off_err });
     if (last_exit) |code| {
         try c.out.print("退出码 {d}\n", .{code});
-    } else if (pidAlive(c, base, token, a.get("user"), pid, buf)) {
+    } else if (last_alive) {
         try c.out.print("进程仍在运行（--follow 可继续跟随）\n", .{});
     } else {
         try c.out.print("进程已结束（无退出码落盘：可能被信号杀死）\n", .{});
@@ -309,18 +284,15 @@ fn cmdExecKill(c: *Ctx, a: util.Args) !void {
         try c.out.print("pid 必须是数字：{s}\n", .{pid_s});
         return error.BadArg;
     };
-    const buf = try c.arena.alloc(u8, BUF);
-    const token = try c.connectToken(sid, buf);
-    const base = try c.envdBase(sid);
     const sig: []const u8 = if (a.has("sigterm")) "SIGNAL_SIGTERM" else "SIGNAL_SIGKILL";
-    const res = try envd.sendSignal(c.arena, c.client, base, token, a.get("user"), pid, sig, buf);
-    if (res.status == 404) {
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_exec.sandboxExecKill(&s, sid, pid, a.get("user"), sig) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
+    if (s.last_status == 404) {
         try c.out.print("pid {d} 已不存在（可能已退出）\n", .{pid});
         return;
-    }
-    if (!res.ok()) {
-        try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body });
-        return error.HttpError;
     }
     try c.out.print("killed pid {d}（{s}）\n", .{ pid, sig });
 }
@@ -349,25 +321,27 @@ fn cmdExecStdin(c: *Ctx, a: util.Args) !void {
             if (n == 0) break;
             total += n;
         }
-        // 注意：不能直接 data = buf[0..total]（别名），后续 connectToken/sendInput
-        // 会把 HTTP 响应写进同一块 buf 头部，管道数据发送前就被掉包（见 issue #3）。
         data = try c.arena.dupe(u8, buf[0..total]);
     } else {
         data = a.joinFrom(2, " ");
     }
 
-    const token = try c.connectToken(sid, buf);
-    const base = try c.envdBase(sid);
-    const res = try envd.sendInput(c.arena, c.client, base, token, a.get("user"), pid, "stdin", data, buf);
-    if (!res.ok()) {
-        if (res.status == 404) {
-            try c.out.print("pid {d} 已不存在（可能已退出）\n", .{pid});
-            return;
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_exec.sandboxExecStdin(&s, sid, pid, a.get("user"), data) catch |e| {
+        if (e == error.MissingConfig) {
+            try c.out.print("{s}\n", .{s.failText()});
+            return e;
+        } else if (e == error.HttpError) {
+            if (s.last_status == 404) {
+                try c.out.print("pid {d} 已不存在（可能已退出）\n", .{pid});
+                return;
+            }
+            try c.out.print("HTTP {d}: {s}\n", .{ s.last_status, s.last_body });
+            try c.out.print("提示：进程需以 stdin 打开启动（exec-async 默认打开；--no-stdin 的会拒绝输入）。\n", .{});
+            return e;
         }
-        try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body });
-        try c.out.print("提示：进程需以 stdin 打开启动（exec-async 默认打开；--no-stdin 的会拒绝输入）。\n", .{});
-        return error.HttpError;
-    }
+        return e;
+    };
     try c.out.print("sent {d} bytes -> pid {d}\n", .{ data.len, pid });
 }
 

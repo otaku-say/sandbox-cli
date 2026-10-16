@@ -35,6 +35,7 @@ pub const Sdk = struct {
     /// 响应体是否撑满调用方缓冲（= 很可能被截断，调用方应据此提示或改用分页/区间）
     last_truncated: bool = false,
     last_config_error: bool = false,
+    missing_config_name: ?[]const u8 = null,
 
     pub fn init(arena: std.mem.Allocator, client: *std.http.Client, io: std.Io, ov: Overrides) Sdk {
         return .{
@@ -45,6 +46,10 @@ pub const Sdk = struct {
             .key = ov.key orelse cfg.apiKey(),
             .proxy = trimSlash(ov.proxy orelse (cfg.proxyURL() orelse "")),
         };
+    }
+
+    pub fn fromCtx(c: anytype) Sdk {
+        return init(c.arena, c.client, c.io, .{ .api = c.api, .key = c.key, .proxy = cfg.proxyURL() });
     }
 
     /// 控制面请求；非 2xx 返回 error.HttpError（**不打印**，现场见 last_*）。
@@ -66,11 +71,13 @@ pub const Sdk = struct {
     ) !httpc.Response {
         if (self.api.len == 0) {
             self.last_config_error = true;
+            self.missing_config_name = "CUBESANDBOX_API_URL";
             self.last_status = 0;
             self.last_body = "";
             return error.MissingConfig;
         }
         self.last_config_error = false;
+        self.missing_config_name = null;
         const url = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ self.api, path });
 
         var hs: [16]std.http.Header = undefined;
@@ -130,13 +137,24 @@ pub const Sdk = struct {
 
     /// 失败 → 给模型看的一句话（缺配置 / HTTP 现场）。
     pub fn failText(self: *const Sdk) []const u8 {
+        if (self.missing_config_name) |name| {
+            return std.fmt.allocPrint(self.arena, "错误：缺少环境变量 {s}", .{name}) catch "错误：缺少环境变量";
+        }
         if (self.last_config_error or (self.last_status == 0 and self.api.len == 0)) {
-            return "缺少环境变量 CUBESANDBOX_API_URL（控制面地址），无法执行控制面操作";
+            return "错误：缺少环境变量 CUBESANDBOX_API_URL";
         }
         if (self.last_status != 0) {
             return std.fmt.allocPrint(self.arena, "HTTP {d}: {s}", .{ self.last_status, self.last_body }) catch "HTTP 请求失败";
         }
         return self.last_body;
+    }
+
+    pub fn printErr(self: *const Sdk, out: *std.Io.Writer, err: anyerror) !void {
+        if (err == error.MissingConfig) {
+            try out.print("{s}\n", .{self.failText()});
+        } else if (err == error.HttpError) {
+            try out.print("HTTP {d}: {s}\n", .{ self.last_status, self.last_body });
+        }
     }
 
     /// 数据面网关是否可用。
@@ -148,6 +166,7 @@ pub const Sdk = struct {
     pub fn envdBase(self: *Sdk, sid: []const u8) ![]const u8 {
         if (self.proxy.len == 0) {
             self.last_config_error = true;
+            self.missing_config_name = "CUBESANDBOX_PROXY_URL";
             return error.MissingConfig;
         }
         return std.fmt.allocPrint(self.arena, "{s}/sandbox/{s}/49983", .{ self.proxy, sid });
@@ -162,8 +181,14 @@ pub const Sdk = struct {
 
     /// 数据面基址 + token 一把取（失败时 last_* 已有现场）。
     pub fn dataPlane(self: *Sdk, sid: []const u8, buf: []u8) !struct { base: []const u8, token: ?[]const u8 } {
+        if (self.api.len == 0) {
+            self.last_config_error = true;
+            self.missing_config_name = "CUBESANDBOX_API_URL";
+            return error.MissingConfig;
+        }
         if (self.proxy.len == 0) {
             self.last_config_error = true;
+            self.missing_config_name = "CUBESANDBOX_PROXY_URL";
             return error.MissingConfig;
         }
         const token = try self.connectToken(sid, buf);
