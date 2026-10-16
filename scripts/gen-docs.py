@@ -87,7 +87,7 @@ def build_doc(binary, title, intro_md, table, extra_head_md):
         lines.append(detail.rstrip("\n"))
         lines.append("```")
         lines.append("")
-        if "示例:" not in detail:
+        if "示例:" not in detail and "示例：" not in detail:
             sys.exit(f"{binary} help {name} 缺少可复制运行的示例")
     return "\n".join(lines) + "\n"
 

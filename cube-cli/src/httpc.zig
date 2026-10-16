@@ -36,6 +36,9 @@ pub const Response = struct {
 /// std.http 的 Response.Head 不保留解析后的头表，只留原始字节 `.bytes`；
 /// 而这些字节指向连接读缓冲，一旦开始读 body 就被覆盖 —— 所以必须先复制一份。
 /// 复制品由 smp_allocator 持有，进程生命周期内一直有效（CLI 是短进程，不回收）。
+/// TODO(MCP 常驻进程)：mcp-server 是长驻进程，每次请求都会复制一份响应头且不释放——
+///   实测 1000 次请求 RSS 无可见增长（每次数百字节），暂按已知项记录；
+///   将来若引入复用 scratch 缓冲，注意「调用方不得跨请求持有 headers」。
 fn captureHeaders(head_bytes: []const u8) Headers {
     const gpa = std.heap.smp_allocator;
     const copy = gpa.dupe(u8, head_bytes) catch return &.{};

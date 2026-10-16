@@ -150,8 +150,21 @@ cd .. && python3 scripts/gen-docs.py --cube cube-cli/zig-out/bin/cube-cli --aio 
 ### 冒烟测试
 
 ```bash
-sh tests/help_smoke.sh          # 帮助体系 + new --help 不建沙箱，可重复执行
+sh tests/run_all.sh             # 一键全量（8 步）：构建 → help 冒烟 → MCP 协议/纯净性 → 工具 mock → 图片边界 → 大文本 UTF-8 → CLI 对拍
+sh tests/help_smoke.sh          # 只跑帮助体系 + new --help 不建沙箱
 ```
+
+`tests/` 目录（全部只用 Python 3 标准库，不依赖网络：
+
+| 文件 | 覆盖 |
+|---|---|
+| `mcp_protocol_test.py` | MCP 协议与 stdout 纯净性（20 组：版本协商、通知零输出、错误码矩阵、id 保真、畸形输入、32 MiB 边界、200 条顺序一致性…） |
+| `mock_cube_server.py` / `mcp_cube_tools_test.py` | cube-cli 37 个工具：MCP 结果 + mock 实收请求双向断言（含安全门禁「未确认零请求」） |
+| `mock_aiod_server.py` / `mcp_aiod_tools_test.py` | aiod-cli 65 个工具：同构断言 + 信封/HTTP/缺参三类异常映射 |
+| `mcp_image_result_test.py` | 图片类工具边界：正常 PNG / 超 8 MiB / 非图片魔数 |
+| `mcp_big_output_test.py` | 超 4 MiB 文本截断的 UTF-8 安全性（截断点落在汉字中间） |
+| `mcp_live_smoke.py` | **真实环境**全链路验收（创建→执行→文件往返→快照→销毁），需真实凭据，手工跑 |
+| `cmd_parity_smoke.py` | CLI 门面改造前后逐字节对拍（需 `--before <改造前二进制>`；缺基线自动 SKIP） |
 
 ### 漂移检查（跟进上游）
 
@@ -183,6 +196,71 @@ python3 scripts/check-sdk-drift.py --fetch          # 想按发布版跟踪：--
 清单只由维护者更新（脚本只报告差异、不自动改清单）。`--json` 拿机器可读结果；
 SDK 检查挂在 `.github/workflows/drift.yml`（每周一 + 手动触发）；v2 检查需要活体 aiod
 （CI 里没有），在沙箱/本机手动跑首条命令。
+
+## MCP Server（Agent 接口）
+
+两个 CLI 均支持作为 **Model Context Protocol (MCP)** 服务运行（子命令 `mcp-server`）。
+MCP Client（如 Claude Desktop、Cursor、Cline 等）可直接将二进制作为子进程拉起，走 stdio 传输与 JSON-RPC 2.0 协议闭环调用沙箱能力。
+
+### 客户端配置示例
+
+#### Claude Desktop (`claude_desktop_config.json`) / Cursor (`mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "cube-control": {
+      "command": "/path/to/cube-cli",
+      "args": ["mcp-server"],
+      "env": {
+        "CUBESANDBOX_API_URL": "https://api.example.com",
+        "CUBESANDBOX_API_KEY": "your-api-key",
+        "CUBESANDBOX_PROXY_URL": "https://proxy.example.com"
+      }
+    },
+    "aiod-data": {
+      "command": "/path/to/aiod-cli",
+      "args": ["mcp-server"],
+      "env": {
+        "SANDBOX_BASE": "https://<网关>/sandbox/<sandboxID>/8080"
+      }
+    }
+  }
+}
+```
+
+> **缺配置不退出**：启动时缺少环境变量不会崩溃退出，仍能正常响应 `initialize` 与 `tools/list`；仅在具体工具被调用且缺少对应配置时返回友好的 `isError: true` 错误提示（指引补充对应环境变量）。
+
+### 工具分组概览
+
+按照功能分域暴露 MCP 工具（工具名采用 `snake_case`）：
+
+#### `cube-cli`（控制面 + envd 数据面通道）
+- **沙箱生命周期**：`sandbox_create`、`sandbox_list`、`sandbox_info`、`sandbox_delete`、`sandbox_pause`、`sandbox_resume`、`sandbox_refresh`、`sandbox_timeout`、`sandbox_net_set`、`sandbox_ports`
+- **进程执行**：`sandbox_exec`、`sandbox_exec_async`、`sandbox_exec_logs`、`sandbox_exec_kill`、`sandbox_exec_exit_code`
+- **文件操作（envd 通道）**：`file_read`、`file_write`、`file_stat`、`file_list`、`file_make_dir`、`file_remove`
+- **快照与持久卷**：`snapshot_create`、`snapshot_list`、`snapshot_delete`、`snapshot_rollback`、`volume_create`、`volume_list`、`volume_delete`
+- **模板与容量**：`template_list`、`template_caps`
+
+#### `aiod-cli`（沙箱内数据面 / aiod v2）
+- **命令执行**：`exec`、`exec_async`、`exec_kill`、`exec_output`、`exec_status`
+- **文件系统**：`file_read`、`file_write`、`file_upload`、`file_download`、`file_delete`、`file_stat`、`file_move`、`file_find`、`fs_tree`、`fs_chmod`
+- **交互终端 (PTY)**：`pty_create`、`pty_write`、`pty_read`、`pty_resize`、`pty_close`
+- **浏览器自动化**：`browser_navigate`、`browser_screenshot`、`browser_click`、`browser_type`、`browser_get_text`、`browser_scroll`、`browser_page_info`、`browser_cookies_get`、`browser_cookies_set`
+- **桌面 Computer-Use**：`desktop_info`、`desktop_screenshot`、`desktop_cursor`、`desktop_clipboard`、`desktop_windows`、`desktop_a11y`、`desktop_a11y_nodes`、`desktop_act`、`desktop_act_batch`、`desktop_record`
+
+### stdout 纯净性承诺
+
+- **绝对无协议外噪音**：stdio 模式下 stdout 只出现「单行、以 `\n` 结尾、可严格被 JSON 解析」的 JSON-RPC 2.0 消息；绝对不输出 banner、进度条、ANSI 颜色代码或任何非协议文本。
+- **诊断分流至 stderr**：所有日志、警告与诊断信息均通过 stderr 输出；添加 `--verbose` 开关时仅在 stderr 打印调试追踪。
+
+### 已知限制
+
+遵循 MCP 规范及设计边界，以下特性在当前版本明确不做：
+- **不支持批处理**：JSON-RPC 顶层批量请求数组将返回 `-32600 Invalid Request`（符合最新 MCP 协议规范）。
+- **无流式/进度通知**：仅接收客户端 `notifications/*` 通知但不做下发，不支持 resources 和 prompts 能力。
+- **无 follow 类工具**：长驻阻塞循环（如 `exec-logs follow`、`pty-read`、`log --follow` 等）不暴露为 MCP 工具。
+- **仅提供 stdio 传输**：不内置 SSE 或 HTTP 传输，保持单二进制静态分发的纯粹性。
 
 ## 注意
 

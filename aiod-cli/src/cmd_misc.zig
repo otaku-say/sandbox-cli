@@ -13,9 +13,21 @@ const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const httpc = @import("httpc.zig");
 const sse = @import("sse.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_misc = @import("sdk_misc.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 8 << 20;
+
+fn toSdk(c: *Ctx) sdkmod.Sdk {
+    return .{
+        .arena = c.arena,
+        .client = c.client,
+        .io = c.io,
+        .base = c.base,
+        .key = c.key,
+    };
+}
 
 fn fail(c: *Ctx, res: httpc.Response) !void {
     try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body });
@@ -83,7 +95,12 @@ fn cmdCode(c: *Ctx, a: util.Args) !void {
 /// code-sess-new [--lang=] / code-sess-ls / code-sess-rm <id>
 fn cmdCodeSess(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     if (std.mem.eql(u8, cmd, "code-info")) {
-        try getJ(c, "/v2/code/info");
+        var sdk = toSdk(c);
+        const body = sdk_misc.codeInfo(&sdk) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return;
     }
     if (std.mem.eql(u8, cmd, "code-sess-ls")) {
@@ -139,7 +156,6 @@ fn cmdWatch(c: *Ctx, cmd: []const u8, a: util.Args) !void {
         return;
     }
     const id = a.at(0) orelse return error.MissingArg;
-    const path = try std.fmt.allocPrint(c.arena, "/v2/watch/{s}", .{id});
     if (std.mem.eql(u8, cmd, "watch-poll")) {
         // 正确路由是 GET /v2/watch/<id>/poll（/watch/<id> 实测 405）；
         // 支持 --cursor= / --limit= / --timeout=（服务端长轮询）。
@@ -157,10 +173,12 @@ fn cmdWatch(c: *Ctx, cmd: []const u8, a: util.Args) !void {
         return;
     }
     if (std.mem.eql(u8, cmd, "watch-rm")) {
-        const buf = try c.arena.alloc(u8, BUF);
-        const res = try httpc.del(c.client, try c.url(path), try auth(c), buf);
-        if (!res.ok()) return fail(c, res);
-        try c.out.print("{s}\n", .{res.body});
+        var sdk = toSdk(c);
+        const body = sdk_misc.watchRm(&sdk, id) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
     }
 }
 
@@ -266,7 +284,12 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         return true;
     }
     if (eq(cmd, "watch-ls")) {
-        try getJ(c, "/v2/watch");
+        var sdk = toSdk(c);
+        const body = sdk_misc.watchLs(&sdk) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return true;
     }
     if (eq(cmd, "watch-events")) {
@@ -278,7 +301,12 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         return true;
     }
     if (eq(cmd, "sandbox-info")) {
-        try getJ(c, "/v2/sandbox");
+        var sdk = toSdk(c);
+        const body = sdk_misc.sandboxInfo(&sdk) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return true;
     }
     if (eq(cmd, "sandbox-packages")) {

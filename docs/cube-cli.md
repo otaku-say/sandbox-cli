@@ -126,6 +126,7 @@ cube-cli new -h            # 同上
   - [`help`](#help) —— 帮助：默认速查表 / all 完整表 / <命令> 详情
   - [`logs`](#logs) —— 沙箱日志（启动 / 运行；排障首选）
   - [`raw`](#raw) —— 任意控制面 API 透传（未覆盖端点的兜底）
+  - [`mcp-server`](#mcpserver) —— 以 MCP Server（stdio）方式运行（Agent 接口）
 - **进程 / PTY**
   - [`exec-async`](#execasync) —— 后台启动命令（读到 pid 即返回，进程继续跑）
   - [`exec-logs`](#execlogs) —— 增量拉取异步进程的输出
@@ -903,6 +904,23 @@ cube-cli raw —— 任意控制面 API 透传（未覆盖端点的兜底）
 示例:  cube-cli raw GET /health
        cube-cli raw POST /sandboxes --body='{"templateID":"tpl-..."}'
 注意:  非 2xx 打印状态码与响应体，并以非 0 退出。
+```
+
+### mcp-server
+
+```text
+cube-cli mcp-server —— 以 MCP Server（stdio）方式运行（Agent 接口）
+分组: 诊断 / 其它
+
+用途:  把本 CLI 的能力以 MCP（Model Context Protocol）stdio 服务暴露给 Agent：
+       stdin 读 JSON-RPC 2.0 请求，stdout 只写协议消息（绝对无 banner/日志）。
+用法:  cube-cli mcp-server [--api-url=<URL>] [--key=<KEY>] [--proxy=<URL>] [--verbose]
+参数:  --api-url= / --key= / --proxy=  覆盖对应的 CUBESANDBOX_* 环境变量。
+       --verbose  诊断信息打到 stderr（stdout 永远只有协议消息）。
+方法:  initialize / notifications/initialized / ping / tools/list / tools/call。
+示例:  MCP Client 配置（Claude Desktop / Cursor）：
+       {"command":"cube-cli","args":["mcp-server"],"env":{"CUBESANDBOX_API_URL":"...","CUBESANDBOX_API_KEY":"..."}}
+注意:  服务模式下缺配置不会退出，工具调用时返回可读错误；--help 不受纯净约束。
 ```
 
 ## 进程 / PTY

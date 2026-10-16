@@ -11,6 +11,9 @@ const httpc = @import("httpc.zig");
 const envd = @import("envd.zig");
 const connect = @import("connect.zig");
 const jsonfmt = @import("jsonfmt.zig");
+const cfg = @import("cfg.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_files = @import("sdk_files.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 8 << 20;
@@ -49,14 +52,16 @@ fn fail(c: *Ctx, res: httpc.Response) !void {
     return error.HttpError;
 }
 
-/// cat <sid> <path>  —— 输出文件内容
+/// cat <sid> <path>  —— 输出文件内容（SDK 改造）
 fn cmdCat(c: *Ctx, a: util.Args) !void {
     const sid = a.at(0) orelse return error.MissingArg;
     const path = a.at(1) orelse return error.MissingArg;
-    const t = try target(c, sid);
-    const res = try envd.readFile(c.arena, c.client, t.base, t.token, a.get("user"), path, t.buf);
-    if (!res.ok()) return fail(c, res);
-    try c.out.print("{s}", .{res.body});
+    var s = sdkmod.Sdk.fromCtx(c);
+    const content = sdk_files.fileRead(&s, sid, path, a.get("user")) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
+    try c.out.print("{s}", .{content});
 }
 
 /// write <sid> <本地文件|-> <远端路径>  —— 从本地（或 stdin）写入远端
@@ -82,9 +87,11 @@ fn cmdWrite(c: *Ctx, a: util.Args) !void {
         data = try readLocalFile(c.io, c.arena, local);
     }
 
-    const t = try target(c, sid);
-    const res = try envd.writeFile(c.arena, c.client, t.base, t.token, a.get("user"), remote, data, t.buf);
-    if (!res.ok()) return fail(c, res);
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_files.fileWrite(&s, sid, remote, data, a.get("user")) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     try c.out.print("wrote {d} bytes -> {s}\n", .{ data.len, remote });
 }
 
@@ -97,13 +104,14 @@ fn readLocalFile(io: std.Io, arena: std.mem.Allocator, path: []const u8) ![]cons
 fn cmdLs(c: *Ctx, a: util.Args) !void {
     const sid = a.at(0) orelse return error.MissingArg;
     const path = a.at(1) orelse "/";
-    const t = try target(c, sid);
-    const body = try jsonPath(c, path);
-    const res = try envd.fsRPC(c.arena, c.client, t.base, t.token, a.get("user"), "ListDir", body, t.buf);
-    if (!res.ok()) return fail(c, res);
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_files.fileList(&s, sid, path, a.get("user")) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
 
-    const parsed = std.json.parseFromSlice(std.json.Value, c.arena, res.body, .{}) catch {
-        try c.out.print("{s}\n", .{res.body});
+    const parsed = std.json.parseFromSlice(std.json.Value, c.arena, body, .{}) catch {
+        try c.out.print("{s}\n", .{body});
         return;
     };
     const entries = blk: {
@@ -112,7 +120,7 @@ fn cmdLs(c: *Ctx, a: util.Args) !void {
                 if (e == .array) break :blk e.array.items;
             }
         }
-        try c.out.print("{s}\n", .{res.body});
+        try c.out.print("{s}\n", .{body});
         return;
     };
     try c.out.print("{s:<10} {s:<12} {s:<9} {s}\n", .{ "类型", "大小", "权限", "名称" });
@@ -130,21 +138,23 @@ fn cmdLs(c: *Ctx, a: util.Args) !void {
 fn cmdStat(c: *Ctx, a: util.Args) !void {
     const sid = a.at(0) orelse return error.MissingArg;
     const path = a.at(1) orelse return error.MissingArg;
-    const t = try target(c, sid);
-    const body = try jsonPath(c, path);
-    const res = try envd.fsRPC(c.arena, c.client, t.base, t.token, a.get("user"), "Stat", body, t.buf);
-    if (!res.ok()) return fail(c, res);
-    try c.out.print("{s}\n", .{res.body});
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_files.fileStat(&s, sid, path, a.get("user")) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
+    try c.out.print("{s}\n", .{body});
 }
 
 /// mkdir <sid> <path>
 fn cmdMkdir(c: *Ctx, a: util.Args) !void {
     const sid = a.at(0) orelse return error.MissingArg;
     const path = a.at(1) orelse return error.MissingArg;
-    const t = try target(c, sid);
-    const body = try jsonPath(c, path);
-    const res = try envd.fsRPC(c.arena, c.client, t.base, t.token, a.get("user"), "MakeDir", body, t.buf);
-    if (!res.ok()) return fail(c, res);
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_files.fileMkdir(&s, sid, path, a.get("user")) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     try c.out.print("mkdir {s}\n", .{path});
 }
 
@@ -152,10 +162,11 @@ fn cmdMkdir(c: *Ctx, a: util.Args) !void {
 fn cmdRm(c: *Ctx, a: util.Args) !void {
     const sid = a.at(0) orelse return error.MissingArg;
     const path = a.at(1) orelse return error.MissingArg;
-    const t = try target(c, sid);
-    const body = try jsonPath(c, path);
-    const res = try envd.fsRPC(c.arena, c.client, t.base, t.token, a.get("user"), "Remove", body, t.buf);
-    if (!res.ok()) return fail(c, res);
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_files.fileDelete(&s, sid, path, a.get("user")) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     try c.out.print("rm {s}\n", .{path});
 }
 
@@ -164,12 +175,11 @@ fn cmdMv(c: *Ctx, a: util.Args) !void {
     const sid = a.at(0) orelse return error.MissingArg;
     const src = a.at(1) orelse return error.MissingArg;
     const dst = a.at(2) orelse return error.MissingArg;
-    const t = try target(c, sid);
-    const body = try std.fmt.allocPrint(c.arena, "{{\"source\":\"{s}\",\"destination\":\"{s}\"}}", .{
-        try envd.jsonEscape(c.arena, src), try envd.jsonEscape(c.arena, dst),
-    });
-    const res = try envd.fsRPC(c.arena, c.client, t.base, t.token, a.get("user"), "Move", body, t.buf);
-    if (!res.ok()) return fail(c, res);
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_files.fileMove(&s, sid, src, dst, a.get("user")) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     try c.out.print("mv {s} -> {s}\n", .{ src, dst });
 }
 
@@ -199,20 +209,19 @@ fn eq(a: []const u8, b: []const u8) bool {
 fn cmdExists(c: *Ctx, a: util.Args) !void {
     const sid = a.at(0) orelse return error.MissingArg;
     const path = a.at(1) orelse return error.MissingArg;
-    const t = try target(c, sid);
-    const body = try jsonPath(c, path);
-    const res = try envd.fsRPC(c.arena, c.client, t.base, t.token, a.get("user"), "Stat", body, t.buf);
-    if (res.ok()) {
+    var s = sdkmod.Sdk.fromCtx(c);
+    const ex = sdk_files.fileExists(&s, sid, path, a.get("user")) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
+    if (ex) {
         try c.out.print("true\n", .{});
         return;
-    }
-    const not_found = res.status == 404 or std.mem.indexOf(u8, res.body, "not_found") != null;
-    if (not_found) {
+    } else {
         try c.out.print("false\n", .{});
         c.out.flush() catch {};
         std.process.exit(1);
     }
-    return fail(c, res);
 }
 
 fn getStrKey(v: std.json.Value, key: []const u8) ?[]const u8 {

@@ -15,6 +15,7 @@ const cmd_pty = @import("cmd_pty.zig");
 const cmd_browser = @import("cmd_browser.zig");
 const cmd_misc = @import("cmd_misc.zig");
 const cmd_cmp = @import("cmd_cmp.zig");
+const cmd_mcp = @import("cmd_mcp.zig");
 const help = @import("help.zig");
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -88,6 +89,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (!help.known(cmd)) {
         try help.printUnknown(out, cmd);
         exitWith(out, 1);
+    }
+
+    // MCP Server 模式：必须在 SANDBOX_BASE 检查之前放行 —— 缺配置也要能启动，
+    // 只有工具调用时才返回可读错误（否则 MCP Client 直接失联）。
+    if (std.mem.eql(u8, cmd, "mcp-server")) {
+        const code = try cmd_mcp.run(arena, io, &client, rest);
+        if (code != 0) exitWith(out, code);
+        return;
     }
 
     const base = cfg.sandboxBase() orelse {

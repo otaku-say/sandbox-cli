@@ -8,6 +8,8 @@ const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const jsonfmt = @import("jsonfmt.zig");
 const envd = @import("envd.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_lifecycle = @import("sdk_lifecycle.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -44,10 +46,12 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     return true;
 }
 
-fn fetch(c: *Ctx, sid: []const u8) !httpc.Response {
-    const buf = try c.arena.alloc(u8, BUF);
-    const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}", .{sid});
-    return c.control(.GET, path, null, buf);
+fn fetch(c: *Ctx, sid: []const u8) ![]const u8 {
+    var s = sdkmod.Sdk.fromCtx(c);
+    return sdk_lifecycle.sandboxInfo(&s, sid, .{}) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
 }
 
 pub fn run(c: *Ctx, argv: []const []const u8) !void {
@@ -59,9 +63,9 @@ pub fn run(c: *Ctx, argv: []const []const u8) !void {
 
     // --host[=端口]：打印 domain 与 SDK get_host(port) 的虚拟域名（排障对照上游文档）
     if (a.get("host")) |hv| {
-        const res0 = try fetch(c, sid);
-        const parsed = std.json.parseFromSlice(Detail, c.arena, res0.body, .{ .ignore_unknown_fields = true }) catch {
-            try c.out.print("{s}\n", .{res0.body});
+        const body0 = try fetch(c, sid);
+        const parsed = std.json.parseFromSlice(Detail, c.arena, body0, .{ .ignore_unknown_fields = true }) catch {
+            try c.out.print("{s}\n", .{body0});
             return;
         };
         const domain: []const u8 = if (parsed.value.domain) |dv| (jsonfmt.valueStr(c.arena, dv) catch "-") else "-";
@@ -83,9 +87,9 @@ pub fn run(c: *Ctx, argv: []const []const u8) !void {
 
     // --mcp-url：打印 MCP 网关流式 HTTP 端点（http://50005-<sid>.<domain>/mcp）
     if (a.has("mcp-url")) {
-        const res0 = try fetch(c, sid);
-        const parsed = std.json.parseFromSlice(Detail, c.arena, res0.body, .{ .ignore_unknown_fields = true }) catch {
-            try c.out.print("{s}\n", .{res0.body});
+        const body0 = try fetch(c, sid);
+        const parsed = std.json.parseFromSlice(Detail, c.arena, body0, .{ .ignore_unknown_fields = true }) catch {
+            try c.out.print("{s}\n", .{body0});
             return;
         };
         const domain: []const u8 = if (parsed.value.domain) |dv| (jsonfmt.valueStr(c.arena, dv) catch "-") else "-";
@@ -115,7 +119,7 @@ pub fn run(c: *Ctx, argv: []const []const u8) !void {
     var limit_s: u64 = 120;
     if (a.get("timeout")) |t| limit_s = std.fmt.parseInt(u64, t, 10) catch 120;
 
-    var res = try fetch(c, sid);
+    var body = try fetch(c, sid);
     if (wait) |target| {
         if (target.len == 0) {
             try c.out.print("错误：--wait 需要目标状态（如 --wait=running）\n", .{});
@@ -123,14 +127,14 @@ pub fn run(c: *Ctx, argv: []const []const u8) !void {
         }
         var waited: u64 = 0;
         while (waited < limit_s) {
-            const st = stateOf(c, res.body) orelse "";
+            const st = stateOf(c, body) orelse "";
             if (std.mem.eql(u8, st, target)) break;
             std.debug.print("[info] 等待 {s}（当前 {s}，{d}/{d}s）\n", .{ target, st, waited, limit_s });
             try std.Io.sleep(c.io, .fromSeconds(2), .awake);
             waited += 2;
-            res = try fetch(c, sid);
+            body = try fetch(c, sid);
         }
-        const st = stateOf(c, res.body) orelse "";
+        const st = stateOf(c, body) orelse "";
         if (!std.mem.eql(u8, st, target)) {
             try c.out.print("超时 {d}s：{s} 未进入 {s}（当前 {s}）\n", .{ limit_s, sid, target, st });
             return error.WaitTimeout;
@@ -138,10 +142,10 @@ pub fn run(c: *Ctx, argv: []const []const u8) !void {
     }
 
     if (a.has("json")) {
-        try c.out.print("{s}\n", .{res.body});
+        try c.out.print("{s}\n", .{body});
         return;
     }
-    try printDetail(c, sid, res.body);
+    try printDetail(c, sid, body);
 }
 
 fn stateOf(c: *Ctx, body: []const u8) ?[]const u8 {
