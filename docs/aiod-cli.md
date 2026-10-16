@@ -1207,8 +1207,9 @@ aiod-cli mcp-server —— 以 MCP Server（stdio）方式运行（Agent 接口�
 用法:  aiod-cli mcp-server [--base=<URL>] [--key=<KEY>] [--verbose]
 参数:  --base= / --key=  覆盖 SANDBOX_BASE / SANDBOX_KEY。
        --verbose  诊断信息打到 stderr（stdout 永远只有协议消息）。
-       MCP Client 配置示例：{"command":"aiod-cli","args":["mcp-server"],"env":{"SANDBOX_BASE":"..."}}
 方法:  initialize / notifications/initialized / ping / tools/list / tools/call。
+示例:  MCP Client 配置（Claude Desktop / Cursor）：
+       {"command":"aiod-cli","args":["mcp-server"],"env":{"SANDBOX_BASE":"https://<网关>/sandbox/<沙箱ID>/8080"}}
 注意:  服务模式下缺配置不会退出，工具调用时返回可读错误；--help 不受纯净约束。
 ```
 

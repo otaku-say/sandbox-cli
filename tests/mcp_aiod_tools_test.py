@@ -169,8 +169,6 @@ def run_tests(binary):
          "POST", "/v2/pty/sessions/pty-test-1/input", lambda b: "ls" in b and "true" in b),
         ("pty_delete", {"session_id": "pty-test-1"},
          "DELETE", "/v2/pty/sessions/pty-test-1", None),
-        ("pty_rm", {"session_id": "pty-test-1"},
-         "DELETE", "/v2/pty/sessions/pty-test-1", None),
         ("pty_signal", {"session_id": "pty-test-1", "signal": "SIGINT"},
          "POST", "/v2/pty/sessions/pty-test-1/signal", lambda b: "SIGINT" in b),
         ("pty_resize", {"session_id": "pty-test-1", "cols": 100, "rows": 30},

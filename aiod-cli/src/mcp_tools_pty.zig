@@ -152,14 +152,6 @@ pub const tools = [_]Tool{
         .handler = tPtyDelete,
     },
     .{
-        .name = "pty_rm",
-        .description = "关闭并销毁指定的 PTY 终端会话（pty_delete 的别名，具有破坏性）。",
-        .schema =
-        \\{"type":"object","properties":{"session_id":{"type":"string","description":"要销毁的 PTY 会话 ID"}},"required":["session_id"]}
-        ,
-        .handler = tPtyDelete,
-    },
-    .{
         .name = "pty_signal",
         .description = "向 PTY 终端会话进程发送信号（如 SIGINT / SIGKILL / SIGTERM）。",
         .schema =
