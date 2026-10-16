@@ -16,6 +16,10 @@ const envd = @import("envd.zig");
 const cfg = @import("cfg.zig");
 const httpc = @import("httpc.zig");
 const jsonfmt = @import("jsonfmt.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_lifecycle = @import("sdk_lifecycle.zig");
+const sdk_snapshot = @import("sdk_snapshot.zig");
+const sdk_volume = @import("sdk_volume.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 2 << 20;
@@ -33,9 +37,11 @@ fn post(c: *Ctx, path: []const u8, body: []const u8, msg: []const u8, arg: []con
 /// pause <sid> [--wait] [--timeout=秒]
 fn cmdPause(c: *Ctx, a: util.Args) !void {
     const sid = try sidOf(a);
-    const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}/pause", .{sid});
-    const buf = try c.arena.alloc(u8, BUF);
-    _ = try c.control(.POST, path, "{}", buf);
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_lifecycle.sandboxPause(&s, sid) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     if (a.has("wait")) {
         var limit_s: u64 = 30;
         if (a.get("timeout")) |t| limit_s = std.fmt.parseInt(u64, t, 10) catch 30;
@@ -48,55 +54,64 @@ fn cmdPause(c: *Ctx, a: util.Args) !void {
 /// resume <sid> [--timeout=秒]
 fn cmdResume(c: *Ctx, a: util.Args) !void {
     const sid = try sidOf(a);
-    const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}/resume", .{sid});
-    var body: []const u8 = "{}";
+    var timeout_val: ?u64 = null;
     if (a.get("timeout")) |t| {
-        body = try std.fmt.allocPrint(c.arena, "{{\"timeout\":{s}}}", .{t});
+        timeout_val = std.fmt.parseInt(u64, t, 10) catch null;
     }
-    try post(c, path, body, "resumed", sid);
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_lifecycle.sandboxResume(&s, sid, timeout_val) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
+    try c.out.print("resumed {s}\n", .{sid});
 }
 
 /// timeout <sid> <秒> | timeout <sid> --timeout=秒   （-1 = 永不回收）
 fn cmdTimeout(c: *Ctx, a: util.Args) !void {
     const sid = try sidOf(a);
     const secs = a.get("timeout") orelse (a.at(1) orelse return error.MissingArg);
-    _ = std.fmt.parseInt(i64, secs, 10) catch {
+    const n = std.fmt.parseInt(i64, secs, 10) catch {
         try c.out.print("错误：秒数需要整数（收到 {s}）\n", .{secs});
         return error.BadArg;
     };
-    const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}/timeout", .{sid});
-    const body = try std.fmt.allocPrint(c.arena, "{{\"timeout\":{s}}}", .{secs});
-    try post(c, path, body, "timeout set", sid);
+    var s = sdkmod.Sdk.fromCtx(c);
+    _ = sdk_lifecycle.sandboxSetTimeout(&s, sid, n) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
+    try c.out.print("timeout set {s}\n", .{sid});
 }
 
 /// refresh <sid> <秒> | refresh <sid> --duration=秒   （续期：新增时间窗）
 fn cmdRefresh(c: *Ctx, a: util.Args) !void {
     const sid = try sidOf(a);
     const secs = a.get("duration") orelse (a.at(1) orelse return error.MissingArg);
-    _ = std.fmt.parseInt(i64, secs, 10) catch {
+    const n = std.fmt.parseInt(i64, secs, 10) catch {
         try c.out.print("错误：秒数需要整数（收到 {s}）\n", .{secs});
         return error.BadArg;
     };
-    const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}/refreshes", .{sid});
-    const body = try std.fmt.allocPrint(c.arena, "{{\"duration\":{s}}}", .{secs});
-    try post(c, path, body, "refreshed", sid);
+    const dur: ?u64 = if (n >= 0) @intCast(n) else null;
+    var s = sdkmod.Sdk.fromCtx(c);
+    _ = sdk_lifecycle.sandboxRefresh(&s, sid, dur) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
+    try c.out.print("refreshed {s}\n", .{sid});
 }
 
 /// snap <sid> [--name=名称]
 fn cmdSnap(c: *Ctx, a: util.Args) !void {
     const sid = try sidOf(a);
-    const buf = try c.arena.alloc(u8, BUF);
-    const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}/snapshots", .{sid});
-    var body: []const u8 = "{}";
-    if (a.get("name")) |n| {
-        body = try std.fmt.allocPrint(c.arena, "{{\"name\":\"{s}\"}}", .{try envd.jsonEscape(c.arena, n)});
-    }
-    const res = try c.control(.POST, path, body, buf);
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_snapshot.snapshotCreate(&s, sid, a.get("name")) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     // 尽量提取 snapshotID
-    if (envd.extractString(c.arena, res.body, "snapshotID")) |id| {
+    if (envd.extractString(c.arena, body, "snapshotID")) |id| {
         try c.out.print("{s}\n", .{id});
     } else {
-        try c.out.print("{s}\n", .{res.body});
+        try c.out.print("{s}\n", .{body});
     }
 }
 
@@ -244,9 +259,11 @@ fn printSnapRow(c: *Ctx, item: std.json.Value) !void {
 /// snap-rm <snapshotID>   —— 走模板删除接口
 fn cmdSnapRm(c: *Ctx, a: util.Args) !void {
     const id = a.at(0) orelse return error.MissingArg;
-    const buf = try c.arena.alloc(u8, BUF);
-    const path = try std.fmt.allocPrint(c.arena, "/templates/{s}", .{id});
-    _ = try c.control(.DELETE, path, null, buf);
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_snapshot.snapshotDelete(&s, id) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     try c.out.print("snapshot removed {s}\n", .{id});
 }
 
@@ -254,25 +271,28 @@ fn cmdSnapRm(c: *Ctx, a: util.Args) !void {
 fn cmdRollback(c: *Ctx, a: util.Args) !void {
     const sid = try sidOf(a);
     const snap = a.at(1) orelse return error.MissingArg;
-    const path = try std.fmt.allocPrint(c.arena, "/sandboxes/{s}/rollback", .{sid});
-    const body = try std.fmt.allocPrint(c.arena, "{{\"snapshotID\":\"{s}\"}}", .{try envd.jsonEscape(c.arena, snap)});
-    const buf = try c.arena.alloc(u8, BUF);
-    const res = try c.controlRaw(.POST, path, body, &.{}, buf);
-    if (!res.ok()) {
-        if (res.status == 404) {
-            try c.out.print("沙箱或快照不存在（{s} ← {s}）\n", .{ sid, snap });
-        } else if (res.status == 409) {
-            try c.out.print("回滚冲突：可能有进行中的生命周期操作，稍后重试（HTTP 409）\n", .{});
-        } else {
-            try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body });
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_snapshot.snapshotRollback(&s, sid, snap, false, 0) catch |e| {
+        if (e == error.MissingConfig) {
+            try c.out.print("{s}\n", .{s.failText()});
+            return e;
+        } else if (e == error.HttpError) {
+            if (s.last_status == 404) {
+                try c.out.print("沙箱或快照不存在（{s} ← {s}）\n", .{ sid, snap });
+            } else if (s.last_status == 409) {
+                try c.out.print("回滚冲突：可能有进行中的生命周期操作，稍后重试（HTTP 409）\n", .{});
+            } else {
+                try c.out.print("HTTP {d}: {s}\n", .{ s.last_status, s.last_body });
+            }
+            return e;
         }
-        return error.HttpError;
-    }
+        return e;
+    };
     if (a.has("json")) {
-        try c.out.print("{s}\n", .{res.body});
+        try c.out.print("{s}\n", .{body});
     } else {
-        const op = envd.extractString(c.arena, res.body, "operationID") orelse "-";
-        const st = envd.extractString(c.arena, res.body, "status") orelse "-";
+        const op = envd.extractString(c.arena, body, "operationID") orelse "-";
+        const st = envd.extractString(c.arena, body, "status") orelse "-";
         try c.out.print("已回滚 {s} ← {s}\n", .{ sid, snap });
         try c.out.print("operationID: {s}\nstatus: {s}\n", .{ op, st });
     }
@@ -551,14 +571,17 @@ fn killTemplate(c: *Ctx, id: []const u8) bool {
 
 /// vol-ls [--json]：卷列表（表格：卷ID / 名称）。
 fn volLs(c: *Ctx, a: util.Args) !void {
-    const buf = try c.arena.alloc(u8, BUF);
-    const res = try c.control(.GET, "/volumes", null, buf);
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_volume.volumeList(&s) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     if (a.has("json")) {
-        try c.out.print("{s}\n", .{res.body});
+        try c.out.print("{s}\n", .{body});
         return;
     }
-    const v = std.json.parseFromSlice(std.json.Value, c.arena, res.body, .{}) catch {
-        try c.out.print("{s}\n", .{res.body});
+    const v = std.json.parseFromSlice(std.json.Value, c.arena, body, .{}) catch {
+        try c.out.print("{s}\n", .{body});
         return;
     };
     var items: []const std.json.Value = &.{};
@@ -583,31 +606,21 @@ fn volLs(c: *Ctx, a: util.Args) !void {
 /// vol-new [<名字>] [--driver=cos|s3|nfs|...] [--show-token] [--json]
 /// 名字省略时由服务端生成 UUID。
 fn volNew(c: *Ctx, a: util.Args) !void {
-    const buf = try c.arena.alloc(u8, BUF);
-    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 4096));
-    try w.writeAll("{");
-    var comma = false;
-    if (a.at(0)) |name| {
-        if (name.len > 0) {
-            try w.print("\"name\":\"{s}\"", .{try envd.jsonEscape(c.arena, name)});
-            comma = true;
-        }
-    }
-    if (a.get("driver")) |d| {
-        if (comma) try w.writeAll(",");
-        try w.print("\"driver\":\"{s}\"", .{try envd.jsonEscape(c.arena, d)});
-        comma = true;
-    }
-    try w.writeAll("}");
-    const res = try c.control(.POST, "/volumes", w.buffered(), buf);
+    const name = a.at(0);
+    const driver = a.get("driver");
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_volume.volumeCreate(&s, name, driver) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     const show = a.has("show-token");
     if (a.has("json")) {
-        try c.out.print("{s}\n", .{try maskTokenJson(c, res.body, show)});
+        try c.out.print("{s}\n", .{try maskTokenJson(c, body, show)});
         return;
     }
-    const id = envd.extractString(c.arena, res.body, "volumeID") orelse "";
-    const nm = envd.extractString(c.arena, res.body, "name") orelse "";
-    const tok = envd.extractString(c.arena, res.body, "token") orelse "";
+    const id = envd.extractString(c.arena, body, "volumeID") orelse "";
+    const nm = envd.extractString(c.arena, body, "name") orelse "";
+    const tok = envd.extractString(c.arena, body, "token") orelse "";
     try c.out.print("已创建卷: {s}\n", .{if (nm.len > 0) nm else id});
     try c.out.print("volumeID: {s}\n", .{id});
     if (show) {
@@ -621,17 +634,19 @@ fn volNew(c: *Ctx, a: util.Args) !void {
 /// vol-info <卷ID> [--show-token] [--json]（默认脱敏 token）
 fn volInfo(c: *Ctx, a: util.Args) !void {
     const id = a.at(0) orelse return error.MissingArg;
-    const buf = try c.arena.alloc(u8, BUF);
-    const path = try std.fmt.allocPrint(c.arena, "/volumes/{s}", .{id});
-    const res = try c.control(.GET, path, null, buf);
+    var s = sdkmod.Sdk.fromCtx(c);
+    const body = sdk_volume.volumeInfo(&s, id) catch |e| {
+        try s.printErr(c.out, e);
+        return e;
+    };
     const show = a.has("show-token");
     if (a.has("json")) {
-        try c.out.print("{s}\n", .{try maskTokenJson(c, res.body, show)});
+        try c.out.print("{s}\n", .{try maskTokenJson(c, body, show)});
         return;
     }
-    const vid = envd.extractString(c.arena, res.body, "volumeID") orelse id;
-    const nm = envd.extractString(c.arena, res.body, "name") orelse "-";
-    const tok = envd.extractString(c.arena, res.body, "token") orelse "";
+    const vid = envd.extractString(c.arena, body, "volumeID") orelse id;
+    const nm = envd.extractString(c.arena, body, "name") orelse "-";
+    const tok = envd.extractString(c.arena, body, "token") orelse "";
     try c.out.print("卷ID  : {s}\n", .{vid});
     try c.out.print("名称  : {s}\n", .{nm});
     if (show) {
@@ -644,24 +659,27 @@ fn volInfo(c: *Ctx, a: util.Args) !void {
 /// vol-rm <卷ID>：409 = 仍被沙箱挂载（refcount>0）→ 中文提示。
 fn volRm(c: *Ctx, a: util.Args) !void {
     const id = a.at(0) orelse return error.MissingArg;
-    const buf = try c.arena.alloc(u8, BUF);
-    const path = try std.fmt.allocPrint(c.arena, "/volumes/{s}", .{id});
-    const res = try c.controlRaw(.DELETE, path, null, &.{}, buf);
-    if (res.ok()) {
-        try c.out.print("已删除卷 {s}\n", .{id});
-        return;
-    }
-    if (res.status == 404) {
-        try c.out.print("卷不存在（可能已删除）: {s}\n", .{id});
-        return;
-    }
-    if (res.status == 409) {
-        try c.out.print("无法删除：卷 {s} 仍被沙箱挂载（refcount>0）。\n先销毁所有挂载它的沙箱（`cube-cli ls` 找到后 `cube-cli rm <sandboxID>`），再删卷。\n", .{id});
-        try c.out.print("服务端返回: {s}\n", .{res.body[0..@min(res.body.len, 300)]});
-        return error.VolumeInUse;
-    }
-    try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body });
-    return error.HttpError;
+    var s = sdkmod.Sdk.fromCtx(c);
+    sdk_volume.volumeDelete(&s, id) catch |e| {
+        if (e == error.MissingConfig) {
+            try c.out.print("{s}\n", .{s.failText()});
+            return e;
+        } else if (e == error.HttpError) {
+            if (s.last_status == 404) {
+                try c.out.print("卷不存在（可能已删除）: {s}\n", .{id});
+                return;
+            }
+            if (s.last_status == 409) {
+                try c.out.print("无法删除：卷 {s} 仍被沙箱挂载（refcount>0）。\n先销毁所有挂载它的沙箱（`cube-cli ls` 找到后 `cube-cli rm <sandboxID>`），再删卷。\n", .{id});
+                try c.out.print("服务端返回: {s}\n", .{s.last_body[0..@min(s.last_body.len, 300)]});
+                return error.VolumeInUse;
+            }
+            try c.out.print("HTTP {d}: {s}\n", .{ s.last_status, s.last_body });
+            return error.HttpError;
+        }
+        return e;
+    };
+    try c.out.print("已删除卷 {s}\n", .{id});
 }
 
 /// token 脱敏（--show-token 时原样返回）：解析 JSON 把 token 值换成 "***"；

@@ -205,6 +205,12 @@ pub fn sandboxCreate(self: *Sdk, opt: CreateOptions) !CreateResult {
     return .{ .body = try self.arena.dupe(u8, res.body), .template_id = tpl };
 }
 
+pub fn systemHealth(self: *Sdk) ![]const u8 {
+    const buf = try self.arena.alloc(u8, sdkmod.BUF);
+    const res = try self.control(.GET, "/health", null, buf);
+    return self.arena.dupe(u8, res.body);
+}
+
 // ---------------- pause / resume / refresh / timeout ----------------
 
 pub fn sandboxPause(self: *Sdk, sid: []const u8) !void {
@@ -234,7 +240,7 @@ pub fn sandboxRefresh(self: *Sdk, sid: []const u8, duration_s: ?u64) ![]const u8
     return self.arena.dupe(u8, res.body);
 }
 
-pub fn sandboxSetTimeout(self: *Sdk, sid: []const u8, seconds: u64) ![]const u8 {
+pub fn sandboxSetTimeout(self: *Sdk, sid: []const u8, seconds: i64) ![]const u8 {
     const path = try std.fmt.allocPrint(self.arena, "/sandboxes/{s}/timeout", .{sid});
     const buf = try self.arena.alloc(u8, sdkmod.BUF);
     const body = try std.fmt.allocPrint(self.arena, "{{\"timeout\":{d}}}", .{seconds});
