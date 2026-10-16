@@ -13,7 +13,6 @@ const jsonfmt = @import("jsonfmt.zig");
 const Ctx = ctxmod.Ctx;
 
 const CAP_BASE = "shell,file,code";
-const MAX_PORTS = 64;
 
 const PortInfo = struct { port: u16, name: []const u8 };
 const port_catalog = [_]PortInfo{
@@ -30,6 +29,14 @@ const port_catalog = [_]PortInfo{
     .{ .port = 18100, .name = "aio-internal" },
 };
 
+// 端口推断的纯函数已下沉到 Core SDK（sdk_template.zig）——CLI 侧保留同名别名，调用点不变。
+const sdk_template = @import("sdk_template.zig");
+pub const parsePorts = sdk_template.parsePorts;
+pub const guessGateway = sdk_template.guessGateway;
+const hasPort = sdk_template.hasPort;
+const contains = sdk_template.contains;
+const MAX_PORTS = sdk_template.MAX_PORTS;
+
 pub fn portName(p: u16) []const u8 {
     for (port_catalog) |pi| {
         if (pi.port == p) return pi.name;
@@ -38,47 +45,10 @@ pub fn portName(p: u16) []const u8 {
 }
 
 /// 解析 "8080:9222:49983" / "8080,9222" → 去重排序的端口数组。
-pub fn parsePorts(arena: std.mem.Allocator, s: []const u8) ![]u16 {
-    const buf = try arena.alloc(u16, MAX_PORTS);
-    var n: usize = 0;
-    var it = std.mem.tokenizeAny(u8, s, ":, ");
-    while (it.next()) |tok| {
-        if (n >= buf.len) break;
-        const v = std.fmt.parseInt(u16, tok, 10) catch continue;
-        var dup = false;
-        for (buf[0..n]) |x| {
-            if (x == v) dup = true;
-        }
-        if (!dup) {
-            buf[n] = v;
-            n += 1;
-        }
-    }
-    const out = buf[0..n];
-    std.mem.sort(u16, out, {}, std.sort.asc(u16));
-    return out;
-}
 
-fn hasPort(ports: []const u16, p: u16) bool {
-    for (ports) |x| {
-        if (x == p) return true;
-    }
-    return false;
-}
 
-fn contains(hay: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, hay, needle) != null;
-}
 
 /// 网关端口推断（实测：完整镜像 8080，轻量镜像 18091）。
-pub fn guessGateway(ports: []const u16, image: []const u8) u16 {
-    if (hasPort(ports, 9222) and hasPort(ports, 8080)) return 8080;
-    if (hasPort(ports, 8080) and !hasPort(ports, 18091)) return 8080;
-    if (hasPort(ports, 18091)) return 18091;
-    if (hasPort(ports, 8080)) return 8080;
-    if (contains(image, "aio-code")) return 18091;
-    return 0;
-}
 
 /// 能力推断（保守白名单）。
 pub fn capsFromStatic(arena: std.mem.Allocator, ports: []const u16, image: []const u8) ![]const u8 {

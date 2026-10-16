@@ -29,7 +29,7 @@ pub const PickResult = struct {
     gw: u16,
 };
 
-fn contains(haystack: []const u8, needle: []const u8) bool {
+pub fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
@@ -95,3 +95,46 @@ pub fn templatePick(self: *Sdk, need: []const u8) !PickResult {
         .gw = best_gw,
     };
 }
+
+// ---------------- 端口 / 网关推断（纯函数，从 cmd_template.zig 下沉） ----------------
+
+pub const MAX_PORTS: usize = 64;
+
+pub fn parsePorts(arena: std.mem.Allocator, s: []const u8) ![]u16 {
+    const buf = try arena.alloc(u16, MAX_PORTS);
+    var n: usize = 0;
+    var it = std.mem.tokenizeAny(u8, s, ":, ");
+    while (it.next()) |tok| {
+        if (n >= buf.len) break;
+        const v = std.fmt.parseInt(u16, tok, 10) catch continue;
+        var dup = false;
+        for (buf[0..n]) |x| {
+            if (x == v) dup = true;
+        }
+        if (!dup) {
+            buf[n] = v;
+            n += 1;
+        }
+    }
+    const out = buf[0..n];
+    std.mem.sort(u16, out, {}, std.sort.asc(u16));
+    return out;
+}
+
+pub fn hasPort(ports: []const u16, p: u16) bool {
+    for (ports) |x| {
+        if (x == p) return true;
+    }
+    return false;
+}
+
+
+pub fn guessGateway(ports: []const u16, image: []const u8) u16 {
+    if (hasPort(ports, 9222) and hasPort(ports, 8080)) return 8080;
+    if (hasPort(ports, 8080) and !hasPort(ports, 18091)) return 8080;
+    if (hasPort(ports, 18091)) return 18091;
+    if (hasPort(ports, 8080)) return 8080;
+    if (contains(image, "aio-code")) return 18091;
+    return 0;
+}
+

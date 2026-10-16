@@ -52,6 +52,27 @@ pub fn sandboxList(self: *Sdk, q: ListQuery) ![]const u8 {
     return self.arena.dupe(u8, res.body);
 }
 
+// ---------------- 网关推断（agent 用得上：直接得到 aiod 的 SANDBOX_BASE） ----------------
+
+/// 沙箱的 aiod 网关端口：与 CLI `new` 的提示同源（模板暴露端口 + guessGateway）；拿不到就退 8080。
+pub fn gatewayPort(self: *Sdk, template_id: []const u8) u16 {
+    const sdk_template = @import("sdk_template.zig");
+    if (template_id.len == 0) return 8080;
+    const detail = sdk_template.templateInfo(self, template_id) catch return 8080;
+    const raw = envd.extractString(self.arena, detail, "com.exposed_ports") orelse return 8080;
+    const ports = sdk_template.parsePorts(self.arena, raw) catch return 8080;
+    const image = envd.extractString(self.arena, detail, "imageInfo") orelse "";
+    const gw = sdk_template.guessGateway(ports, image);
+    return if (gw == 0) 8080 else gw;
+}
+
+/// 沙箱的 aiod 数据面基址：`<proxy>/sandbox/<sid>/<端口>`；未配置 proxy 时返回空串。
+pub fn sandboxBaseURL(self: *Sdk, sid: []const u8, template_id: []const u8) []const u8 {
+    if (self.proxy.len == 0) return "";
+    const port = gatewayPort(self, template_id);
+    return std.fmt.allocPrint(self.arena, "{s}/sandbox/{s}/{d}", .{ self.proxy, sid, port }) catch "";
+}
+
 // ---------------- info ----------------
 
 pub const InfoOptions = struct {
@@ -107,16 +128,16 @@ pub const CreateOptions = struct {
     mcp: ?[]const u8 = null,
 };
 
-pub fn sandboxCreate(self: *Sdk, opt: CreateOptions) ![]const u8 {
+pub const CreateResult = struct { body: []const u8, template_id: []const u8 };
+
+/// 新建沙箱。挑不到 READY 模板时返回 error.TemplateUnavailable（不拿假 ID 硬发请求）。
+pub fn sandboxCreate(self: *Sdk, opt: CreateOptions) !CreateResult {
     var tpl = opt.template orelse "";
     if (tpl.len == 0) {
         const sdk_template = @import("sdk_template.zig");
-        const picked = sdk_template.templatePick(self, opt.need) catch null;
-        if (picked) |p| {
-            tpl = p.id;
-        } else {
-            tpl = "aio-code";
-        }
+        const picked = sdk_template.templatePick(self, opt.need) catch return error.TemplateUnavailable;
+        tpl = picked.id;
+        if (tpl.len == 0) return error.TemplateUnavailable;
     }
 
     var w = std.Io.Writer.fixed(try self.arena.alloc(u8, 64 << 10));
@@ -181,7 +202,7 @@ pub fn sandboxCreate(self: *Sdk, opt: CreateOptions) ![]const u8 {
 
     const buf = try self.arena.alloc(u8, sdkmod.BUF);
     const res = try self.control(.POST, "/sandboxes", w.buffered(), buf);
-    return self.arena.dupe(u8, res.body);
+    return .{ .body = try self.arena.dupe(u8, res.body), .template_id = tpl };
 }
 
 // ---------------- pause / resume / refresh / timeout ----------------
@@ -354,7 +375,7 @@ pub fn sandboxClone(self: *Sdk, sid: []const u8, opt: CloneOptions) ![]const u8 
             }
             return e;
         };
-        const csid = envd.extractString(self.arena, c_body, "sandboxID") orelse snap;
+        const csid = envd.extractString(self.arena, c_body.body, "sandboxID") orelse snap;
         created[i] = csid;
         try w.print("  {d}: {s}\n", .{ i + 1, csid });
     }

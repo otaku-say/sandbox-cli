@@ -44,14 +44,32 @@ fn tSandboxCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
         .distribution_scope = distribution_scope,
         .mcp = mcp_json,
     }) catch |e| return switch (e) {
+        error.TemplateUnavailable => ToolResult.err(try std.fmt.allocPrint(
+            srv.arena,
+            "没有满足 need={s} 的 READY 模板（可用 template 直接指定模板 ID，或先调 template_list 查看）",
+            .{need},
+        )),
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };
 
-    if (envd.extractString(srv.arena, body, "sandboxID")) |sid| {
-        return ToolResult.ok(sid);
+    // 结果组织：沙箱 ID + 可直接用于 aiod-cli 的网关基址（SANDBOX_BASE）+ 模板/状态。
+    // CLI `new` 把这些打在 stderr 上；MCP 场景下 agent 必须能拿到，否则无法驱动数据面工具。
+    const sid = envd.extractString(srv.arena, body.body, "sandboxID") orelse
+        return ToolResult.ok(types.clampText(srv.arena, body.body));
+    const state = envd.extractString(srv.arena, body.body, "state") orelse "";
+    const base = sdk_lifecycle.sandboxBaseURL(srv.sdk, sid, body.template_id);
+
+    var w = std.Io.Writer.fixed(try srv.arena.alloc(u8, 4096));
+    try w.print("{{\"sandbox_id\":\"{s}\",\"template\":\"{s}\"", .{ sid, body.template_id });
+    if (state.len > 0) try w.print(",\"state\":\"{s}\"", .{state});
+    if (base.len > 0) {
+        try w.print(",\"sandbox_base\":\"{s}\"", .{base});
+    } else {
+        try w.writeAll(",\"sandbox_base\":\"\",\"hint\":\"设置 CUBESANDBOX_PROXY_URL 后可得到 aiod 网关地址\"");
     }
-    return ToolResult.ok(types.clampText(srv.arena, body));
+    try w.writeAll("}");
+    return ToolResult.ok(w.buffered());
 }
 
 fn tSandboxList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {

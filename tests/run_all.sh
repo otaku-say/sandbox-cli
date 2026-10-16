@@ -34,7 +34,7 @@ echo ""
 echo "=================================================="
 echo "== [3/5] MCP 协议与纯净性测试 (tests/mcp_protocol_test.py) =="
 echo "=================================================="
-python3 "$ROOT/tests/mcp_protocol_test.py" --bin "$CUBE" --kind cube --tools-min 4
+python3 "$ROOT/tests/mcp_protocol_test.py" --bin "$CUBE" --kind cube --tools-min 37
 python3 "$ROOT/tests/mcp_protocol_test.py" --bin "$AIO" --kind aiod --tools-min 3
 echo "[PASS] mcp_protocol_test.py (cube & aiod) 全部通过"
 echo ""
