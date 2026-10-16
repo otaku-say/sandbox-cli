@@ -13,10 +13,22 @@ const std = @import("std");
 const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const httpc = @import("httpc.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_exec = @import("sdk_exec.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 4 << 20;
 const BODY = 64 << 10;
+
+fn toSdk(c: *Ctx) sdkmod.Sdk {
+    return .{
+        .arena = c.arena,
+        .client = c.client,
+        .io = c.io,
+        .base = c.base,
+        .key = c.key,
+    };
+}
 
 /// 兼容三种响应形状：
 ///   POST /v2/commands → {"success":true,"data":{command_id,status,stdout,...}}
@@ -280,26 +292,31 @@ fn cmdLog(c: *Ctx, a: util.Args) !void {
 fn cmdKill(c: *Ctx, a: util.Args) !void {
     const id = a.at(0) orelse return error.MissingArg;
     const sig = a.get("signal") orelse "SIGKILL";
-    const buf = try c.arena.alloc(u8, BUF);
-    const body = try std.fmt.allocPrint(c.arena, "{{\"signal\":\"{s}\"}}", .{sig});
-    const path = try std.fmt.allocPrint(c.arena, "/v2/commands/{s}/kill", .{id});
-    const res = try httpc.postJson(c.client, try c.url(path), try jsonAuth(c), body, buf);
-    if (!res.ok()) return errOut(c, res);
+    var sdk = toSdk(c);
+    _ = sdk_exec.kill(&sdk, id, sig) catch {
+        if (sdk.last_body.len > 0) {
+            try c.out.print("{s}\n", .{sdk.last_body});
+        } else {
+            try c.out.print("HTTP {d}\n", .{sdk.last_status});
+        }
+        return error.HttpError;
+    };
     try c.out.print("killed {s}\n", .{id});
 }
 
 /// stdin <command_id> <文本> [--enter]
 fn cmdStdin(c: *Ctx, a: util.Args) !void {
     const id = a.at(0) orelse return error.MissingArg;
-    var text = a.at(1) orelse "";
-    if (a.has("enter")) {
-        text = try std.fmt.allocPrint(c.arena, "{s}\n", .{text});
-    }
-    const buf = try c.arena.alloc(u8, BUF);
-    const body = try std.fmt.allocPrint(c.arena, "{{\"input\":\"{s}\"}}", .{try util.jsonEscape(c.arena, text)});
-    const path = try std.fmt.allocPrint(c.arena, "/v2/commands/{s}/stdin", .{id});
-    const res = try httpc.postJson(c.client, try c.url(path), try jsonAuth(c), body, buf);
-    if (!res.ok()) return errOut(c, res);
+    const text = a.at(1) orelse "";
+    var sdk = toSdk(c);
+    _ = sdk_exec.stdin(&sdk, id, text, a.has("enter")) catch {
+        if (sdk.last_body.len > 0) {
+            try c.out.print("{s}\n", .{sdk.last_body});
+        } else {
+            try c.out.print("HTTP {d}\n", .{sdk.last_status});
+        }
+        return error.HttpError;
+    };
     try c.out.print("ok\n", .{});
 }
 
@@ -320,16 +337,29 @@ fn cmdSess(c: *Ctx, cmd: []const u8, a: util.Args) !void {
         return;
     }
     if (std.mem.eql(u8, cmd, "sess-ls")) {
-        const res = try httpc.get(c.client, try c.url("/v2/commands/sessions"), try auth(c), buf);
-        if (!res.ok()) return errOut(c, res);
-        try c.out.print("{s}\n", .{res.body});
+        var sdk = toSdk(c);
+        const body = sdk_exec.sessionList(&sdk) catch {
+            if (sdk.last_body.len > 0) {
+                try c.out.print("{s}\n", .{sdk.last_body});
+            } else {
+                try c.out.print("HTTP {d}\n", .{sdk.last_status});
+            }
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return;
     }
     if (std.mem.eql(u8, cmd, "sess-rm")) {
         const id = a.at(0) orelse return error.MissingArg;
-        const path = try std.fmt.allocPrint(c.arena, "/v2/commands/sessions/{s}", .{id});
-        const res = try httpc.del(c.client, try c.url(path), try auth(c), buf);
-        if (!res.ok()) return errOut(c, res);
+        var sdk = toSdk(c);
+        _ = sdk_exec.sessionDelete(&sdk, id) catch {
+            if (sdk.last_body.len > 0) {
+                try c.out.print("{s}\n", .{sdk.last_body});
+            } else {
+                try c.out.print("HTTP {d}\n", .{sdk.last_status});
+            }
+            return error.HttpError;
+        };
         try c.out.print("removed {s}\n", .{id});
         return;
     }

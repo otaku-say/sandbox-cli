@@ -15,9 +15,21 @@ const std = @import("std");
 const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const httpc = @import("httpc.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_browser = @import("sdk_browser.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 32 << 20; // 截图可能很大
+
+fn toSdk(c: *Ctx) sdkmod.Sdk {
+    return .{
+        .arena = c.arena,
+        .client = c.client,
+        .io = c.io,
+        .base = c.base,
+        .key = c.key,
+    };
+}
 
 fn fail(c: *Ctx, res: httpc.Response) !void {
     try c.out.print("HTTP {d}: {s}\n", .{ res.status, res.body });
@@ -158,7 +170,12 @@ fn cmdSnapshot(c: *Ctx, a: util.Args) !void {
 /// br-tabs / br-tab-new [--url=] / br-tab-use <id> / br-tab-close <id>
 fn cmdTabs(c: *Ctx, cmd: []const u8, a: util.Args) !void {
     if (std.mem.eql(u8, cmd, "br-tabs")) {
-        try getJ(c, "/v2/browser/tabs");
+        var sdk = toSdk(c);
+        const body = sdk_browser.tabs(&sdk) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return;
     }
     if (std.mem.eql(u8, cmd, "br-tab-new")) {
@@ -321,7 +338,12 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         return true;
     }
     if (eq(cmd, "br-info")) {
-        try getJ(c, "/v2/browser/info");
+        var sdk = toSdk(c);
+        const body = sdk_browser.info(&sdk) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return true;
     }
     if (eq(cmd, "br-config")) {

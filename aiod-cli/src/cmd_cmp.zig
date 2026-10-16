@@ -16,9 +16,21 @@ const std = @import("std");
 const ctxmod = @import("ctx.zig");
 const util = @import("util.zig");
 const httpc = @import("httpc.zig");
+const sdkmod = @import("sdk.zig");
+const sdk_desktop = @import("sdk_desktop.zig");
 
 const Ctx = ctxmod.Ctx;
 const BUF = 16 << 20;
+
+fn toSdk(c: *Ctx) sdkmod.Sdk {
+    return .{
+        .arena = c.arena,
+        .client = c.client,
+        .io = c.io,
+        .base = c.base,
+        .key = c.key,
+    };
+}
 
 // ---------------- 基础 ----------------
 
@@ -315,7 +327,12 @@ fn eq(a: []const u8, b: []const u8) bool {
 pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
     const a = try util.parse(c.arena, argv);
     if (eq(cmd, "cmp-info")) {
-        try getJSON(c, "/v2/computer/info");
+        var sdk = toSdk(c);
+        const body = sdk_desktop.info(&sdk) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return true;
     }
     if (eq(cmd, "cmp-shot")) {
@@ -323,15 +340,30 @@ pub fn dispatch(c: *Ctx, cmd: []const u8, argv: []const []const u8) !bool {
         return true;
     }
     if (eq(cmd, "cmp-cursor")) {
-        try getJSON(c, "/v2/computer/cursor");
+        var sdk = toSdk(c);
+        const body = sdk_desktop.cursor(&sdk) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return true;
     }
     if (eq(cmd, "cmp-clipboard")) {
-        try getJSON(c, "/v2/computer/clipboard");
+        var sdk = toSdk(c);
+        const body = sdk_desktop.clipboard(&sdk) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return true;
     }
     if (eq(cmd, "cmp-windows")) {
-        try getJSON(c, "/v2/computer/windows");
+        var sdk = toSdk(c);
+        const body = sdk_desktop.windows(&sdk) catch {
+            try c.out.print("HTTP {d}: {s}\n", .{ sdk.last_status, sdk.last_body });
+            return error.HttpError;
+        };
+        try c.out.print("{s}\n", .{body});
         return true;
     }
     if (eq(cmd, "cmp-a11y")) {
