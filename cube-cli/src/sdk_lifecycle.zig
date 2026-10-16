@@ -7,6 +7,7 @@ const sdkmod = @import("sdk.zig");
 const httpc = @import("httpc.zig");
 const jsonfmt = @import("jsonfmt.zig");
 const envd = @import("envd.zig");
+const cfg = @import("cfg.zig");
 
 const Sdk = sdkmod.Sdk;
 
@@ -65,7 +66,6 @@ pub fn sandboxInfo(self: *Sdk, sid: []const u8, opt: InfoOptions) ![]const u8 {
     const buf = try self.arena.alloc(u8, sdkmod.BUF);
     var res = try self.control(.GET, path, null, buf);
     if (opt.wait_state) |target| {
-        // 不用墙钟（避免 Io/时间 API 差异）：按秒轮询，最多 timeout_s 次。
         var i: u64 = 0;
         while (i < opt.timeout_s) : (i += 1) {
             if (stateOf(res.body)) |s| {
@@ -87,6 +87,101 @@ fn stateOf(body: []const u8) ?[]const u8 {
         .string => |s| s,
         else => null,
     };
+}
+
+// ---------------- create ----------------
+
+pub const CreateOptions = struct {
+    template: ?[]const u8 = null,
+    need: []const u8 = "code",
+    timeout: ?i64 = null,
+    note: ?[]const u8 = null,
+    agent: ?[]const u8 = null,
+    task: ?[]const u8 = null,
+    env_vars: ?[]const u8 = null,
+    volumes: []const []const u8 = &.{},
+    lifecycle: ?[]const u8 = null,
+    auto_resume: ?bool = null,
+    no_internet: ?bool = null,
+    distribution_scope: ?[]const u8 = null,
+    mcp: ?[]const u8 = null,
+};
+
+pub fn sandboxCreate(self: *Sdk, opt: CreateOptions) ![]const u8 {
+    var tpl = opt.template orelse "";
+    if (tpl.len == 0) {
+        const sdk_template = @import("sdk_template.zig");
+        const picked = sdk_template.templatePick(self, opt.need) catch null;
+        if (picked) |p| {
+            tpl = p.id;
+        } else {
+            tpl = "aio-code";
+        }
+    }
+
+    var w = std.Io.Writer.fixed(try self.arena.alloc(u8, 64 << 10));
+    try w.print("{{\"templateID\":\"{s}\"", .{try envd.jsonEscape(self.arena, tpl)});
+
+    if (opt.timeout) |t| {
+        try w.print(",\"timeout\":{d}", .{t});
+    }
+
+    const agent = opt.agent orelse cfg.getenv("CUBESANDBOX_AGENT_NAME") orelse "cube-cli";
+    const note = opt.note orelse (if (opt.task) |tsk| try std.fmt.allocPrint(self.arena, "{s} · {s}", .{ agent, tsk }) else agent);
+    try w.print(",\"metadata\":{{\"agent\":\"{s}\",\"note\":\"{s}\",\"cli\":\"cube-cli\"", .{
+        try envd.jsonEscape(self.arena, agent),
+        try envd.jsonEscape(self.arena, note),
+    });
+    if (opt.task) |tsk| {
+        try w.print(",\"task\":\"{s}\"", .{try envd.jsonEscape(self.arena, tsk)});
+    }
+    try w.writeAll("}");
+
+    if (opt.env_vars) |ev| {
+        if (ev.len > 0) try w.print(",\"envVars\":{s}", .{ev});
+    }
+    if (opt.volumes.len > 0) {
+        try w.writeAll(",\"volumeMounts\":[");
+        for (opt.volumes, 0..) |v, i| {
+            if (i > 0) try w.writeAll(",");
+            const ci = std.mem.indexOfScalar(u8, v, ':');
+            const name = if (ci) |idx| v[0..idx] else v;
+            const path = if (ci) |idx| v[idx + 1 ..] else try std.fmt.allocPrint(self.arena, "/mnt/{s}", .{name});
+            try w.print("{{\"name\":\"{s}\",\"path\":\"{s}\"}}", .{
+                try envd.jsonEscape(self.arena, name),
+                try envd.jsonEscape(self.arena, path),
+            });
+        }
+        try w.writeAll("]");
+    }
+    if (opt.lifecycle) |lc| {
+        const on = if (std.mem.eql(u8, lc, "pause")) "pause" else "kill";
+        try w.print(",\"lifecycle\":{{\"onTimeout\":\"{s}\"", .{on});
+        if (opt.auto_resume orelse false) try w.writeAll(",\"autoResume\":true");
+        try w.writeAll("}");
+    }
+    if (opt.no_internet orelse false) {
+        try w.writeAll(",\"allow_internet_access\":false");
+    }
+    if (opt.distribution_scope) |sc| {
+        try w.writeAll(",\"distributionScope\":[");
+        var it = std.mem.tokenizeScalar(u8, sc, ',');
+        var first = true;
+        while (it.next()) |tok| {
+            if (!first) try w.writeAll(",");
+            first = false;
+            try w.print("\"{s}\"", .{try envd.jsonEscape(self.arena, tok)});
+        }
+        try w.writeAll("]");
+    }
+    if (opt.mcp) |mcp| {
+        try w.print(",\"mcp\":{s}", .{mcp});
+    }
+    try w.writeAll("}");
+
+    const buf = try self.arena.alloc(u8, sdkmod.BUF);
+    const res = try self.control(.POST, "/sandboxes", w.buffered(), buf);
+    return self.arena.dupe(u8, res.body);
 }
 
 // ---------------- pause / resume / refresh / timeout ----------------
@@ -129,13 +224,9 @@ pub fn sandboxSetTimeout(self: *Sdk, sid: []const u8, seconds: u64) ![]const u8 
 /// PUT /sandboxes/<id>/network（**全量替换语义**，body 与 CLI `net` 完全一致）。
 pub const NetSpec = struct {
     internet: ?bool = null,
-    /// 出站放行域名（数组；与 CLI `--allow=a,b` 同义）
     allow: []const []const u8 = &.{},
-    /// 出站拒绝域名（数组）
     deny: []const []const u8 = &.{},
-    /// allowPublicTraffic
     public: ?bool = null,
-    /// maskRequestHost
     mask_host: ?[]const u8 = null,
 };
 
@@ -184,12 +275,101 @@ pub fn sandboxSetNet(self: *Sdk, sid: []const u8, spec: NetSpec) ![]const u8 {
     return self.arena.dupe(u8, res.body);
 }
 
+// ---------------- ports ----------------
+
+pub fn sandboxPorts(self: *Sdk, sid: []const u8) ![]const u8 {
+    const buf = try self.arena.alloc(u8, sdkmod.BUF);
+    const dp = try self.dataPlane(sid, buf);
+    const probe_cmd = "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null";
+    const res = try envd.exec(self.arena, self.client, dp.base, dp.token, null, probe_cmd, null, null, 10000, buf);
+    if (res.exit_code != 0 and res.stdout.len == 0) {
+        return "（未读到监听端口：沙箱服务可能未就绪）";
+    }
+
+    var w = std.Io.Writer.fixed(try self.arena.alloc(u8, 64 << 10));
+    try w.print("{s:<6} {s:<16} {s:<6} {s}\n", .{ "端口", "绑定", "外部", "访问地址" });
+    var lines = std.mem.splitScalar(u8, res.stdout, '\n');
+    var count: usize = 0;
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or std.mem.startsWith(u8, line, "sl")) continue;
+        var it = std.mem.tokenizeScalar(u8, line, ' ');
+        _ = it.next() orelse continue;
+        const local = it.next() orelse continue;
+        const colon = std.mem.indexOfScalar(u8, local, ':') orelse continue;
+        const hex_port = local[colon + 1 ..];
+        const port = std.fmt.parseInt(u16, hex_port, 16) catch continue;
+        if (port == 0) continue;
+        const st = it.next() orelse continue;
+        if (!std.mem.eql(u8, st, "0A")) continue;
+
+        const is_local = std.mem.startsWith(u8, local, "0100007F") or std.mem.endsWith(u8, local[0..colon], "00000000000000000000000001000000");
+        const ext = !is_local;
+        const bind = if (is_local) "127.0.0.1" else "0.0.0.0";
+        const ext_str = if (ext) "可连" else "-";
+        count += 1;
+        if (ext and self.proxy.len > 0) {
+            try w.print("{d:<6} {s:<16} {s:<6} {s}/sandbox/{s}/{d}/\n", .{ port, bind, ext_str, self.proxy, sid, port });
+        } else {
+            try w.print("{d:<6} {s:<16} {s:<6} （仅沙箱内部）\n", .{ port, bind, ext_str });
+        }
+    }
+    if (count == 0) {
+        return "（未读到监听端口：刚创建的沙箱里服务可能还在启动，稍等再测）";
+    }
+    return w.buffered();
+}
+
+// ---------------- clone ----------------
+
+pub const CloneOptions = struct {
+    n: usize = 1,
+    timeout: ?i64 = null,
+    note: ?[]const u8 = null,
+    keep_snapshot: bool = false,
+};
+
+pub fn sandboxClone(self: *Sdk, sid: []const u8, opt: CloneOptions) ![]const u8 {
+    const sdk_snapshot = @import("sdk_snapshot.zig");
+    const snap_body = try sdk_snapshot.snapshotCreate(self, sid, opt.note);
+    const snap = envd.extractString(self.arena, snap_body, "snapshotID") orelse return error.SnapshotFailed;
+
+    const n = if (opt.n == 0) 1 else opt.n;
+    var w = std.Io.Writer.fixed(try self.arena.alloc(u8, 64 << 10));
+    try w.print("快照: {s}\n克隆沙箱列表:\n", .{snap});
+
+    const created = try self.arena.alloc([]const u8, n);
+    for (0..n) |i| {
+        const c_opt = CreateOptions{
+            .template = snap,
+            .timeout = opt.timeout,
+            .note = opt.note,
+        };
+        const c_body = sandboxCreate(self, c_opt) catch |e| {
+            for (created[0..i]) |csid| {
+                _ = sandboxDelete(self, csid, true) catch {};
+            }
+            if (!opt.keep_snapshot) {
+                _ = sdk_snapshot.snapshotDelete(self, snap) catch {};
+            }
+            return e;
+        };
+        const csid = envd.extractString(self.arena, c_body, "sandboxID") orelse snap;
+        created[i] = csid;
+        try w.print("  {d}: {s}\n", .{ i + 1, csid });
+    }
+
+    if (!opt.keep_snapshot) {
+        _ = sdk_snapshot.snapshotDelete(self, snap) catch {};
+    }
+
+    return w.buffered();
+}
+
 // ---------------- rm（带生命周期互斥重试） ----------------
 
 pub const DeleteResult = enum { deleted, already_gone };
 
-/// DELETE /sandboxes/<id>：404 幂等成功；503/409/408 按 Retry-After 最多重试 3 次。
-/// 重试等待会阻塞调用方（CLI 与 MCP 都接受这一点，语义与既有 rm 一致）。
 pub fn sandboxDelete(self: *Sdk, sid: []const u8, allow_retry: bool) !DeleteResult {
     const path = try std.fmt.allocPrint(self.arena, "/sandboxes/{s}", .{sid});
     const buf = try self.arena.alloc(u8, sdkmod.BUF);
