@@ -35,15 +35,35 @@ pub const Response = struct {
 ///
 /// std.http 的 Response.Head 不保留解析后的头表，只留原始字节 `.bytes`；
 /// 而这些字节指向连接读缓冲，一旦开始读 body 就被覆盖 —— 所以必须先复制一份。
-/// 复制品由 smp_allocator 持有，进程生命周期内一直有效（CLI 是短进程，不回收）。
-/// TODO(MCP 常驻进程)：mcp-server 是长驻进程，每次请求都会复制一份响应头且不释放——
-///   实测 1000 次请求 RSS 无可见增长（每次数百字节），暂按已知项记录；
-///   将来若引入复用 scratch 缓冲，注意「调用方不得跨请求持有 headers」。
-fn captureHeaders(head_bytes: []const u8) Headers {
-    const gpa = std.heap.smp_allocator;
-    const copy = gpa.dupe(u8, head_bytes) catch return &.{};
+/// 响应头生命周期契约：
+/// 响应头副本分配在线程局部 scratch 区（双缓冲 ArenaAllocator，每次请求前 reset(.retain_capacity)）。
+/// 契约规定：Response.headers 及其切片（由 header() / headerInt() 返回）仅在该次请求返回后、
+/// 下一次同线程发起 HTTP 请求之前有效（双缓冲机制额外保证对上一次请求结果的单步跨请求持有安全，如 x-next-token）。
+/// 若调用方需要长期跨请求持有响应头，必须自行复制（dupe）到自身 arena 中。
+threadlocal var scratch_arena_0 = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+threadlocal var scratch_arena_1 = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+threadlocal var scratch_slot: u1 = 0;
+
+fn nextScratchAllocator() std.mem.Allocator {
+    scratch_slot ^= 1;
+    if (scratch_slot == 1) {
+        _ = scratch_arena_1.reset(.retain_capacity);
+        return scratch_arena_1.allocator();
+    } else {
+        _ = scratch_arena_0.reset(.retain_capacity);
+        return scratch_arena_0.allocator();
+    }
+}
+
+/// 复制并解析响应头。
+///
+/// std.http 的 Response.Head 不保留解析后的头表，只留原始字节 `.bytes`；
+/// 而这些字节指向连接读缓冲，一旦开始读 body 就被覆盖 —— 所以必须先复制一份。
+/// 复制品落在 scratch arena 中，随后续请求复用回收，内存上界受控于单次响应头大小。
+fn captureHeaders(arena: std.mem.Allocator, head_bytes: []const u8) Headers {
+    const copy = arena.dupe(u8, head_bytes) catch return &.{};
     var list: std.ArrayList(std.http.Header) = .empty;
-    defer list.deinit(gpa);
+    defer list.deinit(arena);
     var it = std.mem.splitSequence(u8, copy, "\r\n");
     _ = it.first(); // 状态行
     while (it.next()) |line| {
@@ -52,9 +72,9 @@ fn captureHeaders(head_bytes: []const u8) Headers {
         const name = std.mem.trim(u8, line[0..i], " \t");
         const value = std.mem.trim(u8, line[i + 1 ..], " \t");
         if (name.len == 0) continue;
-        list.append(gpa, .{ .name = name, .value = value }) catch return &.{};
+        list.append(arena, .{ .name = name, .value = value }) catch return &.{};
     }
-    return list.toOwnedSlice(gpa) catch &.{};
+    return list.toOwnedSlice(arena) catch &.{};
 }
 
 pub fn request(
@@ -105,7 +125,8 @@ pub fn requestStopAt(
     var response = try req.receiveHead(&.{});
     const status: u16 = @intFromEnum(response.head.status);
     // 先抓住响应头（body 一旦开始读，head.bytes 指向的缓冲就被覆盖）
-    const resp_headers = captureHeaders(response.head.bytes);
+    const scratch = nextScratchAllocator();
+    const resp_headers = captureHeaders(scratch, response.head.bytes);
     // 204/304/HEAD 无 body：直接返回（绝不读流）
     if (status == 204 or status == 304 or method == .HEAD) {
         return .{ .status = status, .body = "", .headers = resp_headers };
