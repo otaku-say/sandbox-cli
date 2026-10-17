@@ -140,6 +140,12 @@ pub const CreateResult = struct { body: []const u8, template_id: []const u8 };
 /// 新建沙箱。挑不到 READY 模板时返回 error.TemplateUnavailable（不拿假 ID 硬发请求）。
 pub fn sandboxCreate(self: *Sdk, opt: CreateOptions) !CreateResult {
     var tpl = opt.template orelse "";
+    if (tpl.len > 0) {
+        // 模板别名 → templateID（与 CLI `new --template=<别名>` 的服务端别名解析一致）；
+        // 解析不到就原样透传，交给服务端处理。
+        const sdk_template = @import("sdk_template.zig");
+        if (sdk_template.resolveAliasRef(self, tpl)) |id| tpl = id;
+    }
     if (tpl.len == 0) {
         const sdk_template = @import("sdk_template.zig");
         const picked = sdk_template.templatePick(self, opt.need) catch return error.TemplateUnavailable;

@@ -13,7 +13,7 @@ const ToolResult = types.ToolResult;
 fn tFileRead(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     const content = sdk_files.fileRead(srv.sdk, sid, path, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -25,7 +25,7 @@ fn tFileWrite(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
     const content = a.str(srv.arena, "content") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     sdk_files.fileWrite(srv.sdk, sid, path, content, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -36,7 +36,7 @@ fn tFileWrite(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tFileList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     const body = sdk_files.fileList(srv.sdk, sid, path, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -47,7 +47,7 @@ fn tFileList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tFileStat(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     const body = sdk_files.fileStat(srv.sdk, sid, path, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -58,7 +58,7 @@ fn tFileStat(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tFileMkdir(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     sdk_files.fileMkdir(srv.sdk, sid, path, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -69,7 +69,7 @@ fn tFileMkdir(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tFileDelete(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     sdk_files.fileDelete(srv.sdk, sid, path, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -81,7 +81,7 @@ fn tFileMove(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const from = a.str(srv.arena, "from") catch return srv.argError(a);
     const to = a.str(srv.arena, "to") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     sdk_files.fileMove(srv.sdk, sid, from, to, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -92,7 +92,7 @@ fn tFileMove(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tFileExists(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     const exists = sdk_files.fileExists(srv.sdk, sid, path, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),

@@ -11,14 +11,14 @@ const Tool = types.Tool;
 const ToolResult = types.ToolResult;
 
 fn tTplList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    if (a.has("instance_type") and a.strOpt("instance_type") == null) {
+    if (a.has("instance_type") and try a.strOpt(srv.arena, "instance_type") == null) {
         return ToolResult.err("参数错误：instance_type 需要是字符串");
     }
-    if (a.has("status") and a.strOpt("status") == null) {
+    if (a.has("status") and try a.strOpt(srv.arena, "status") == null) {
         return ToolResult.err("参数错误：status 需要是字符串");
     }
-    const itype = a.strOpt("instance_type");
-    const status = a.strOpt("status");
+    const itype = try a.strOpt(srv.arena, "instance_type");
+    const status = try a.strOpt(srv.arena, "status");
     var body = sdk_template.templateList(srv.sdk) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -30,10 +30,10 @@ fn tTplList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tTplPick(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    if (a.has("need") and a.strOpt("need") == null) {
+    if (a.has("need") and try a.strOpt(srv.arena, "need") == null) {
         return ToolResult.err("参数错误：need 需要是字符串");
     }
-    const need = a.strOpt("need") orelse "code";
+    const need = try a.strOpt(srv.arena, "need") orelse "code";
     const res = sdk_template.templatePick(srv.sdk, need) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         error.NotFound => ToolResult.err("没有满足条件的 READY 模板"),

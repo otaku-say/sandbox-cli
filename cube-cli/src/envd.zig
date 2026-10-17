@@ -209,13 +209,32 @@ pub fn extractInt(payload: []const u8, field: []const u8) ?i32 {
 /// 用于 base64 载荷（stdout/stderr/pty）与 token —— base64 字符集不含引号与反斜杠，
 /// 因此简单切片是安全的。
 pub fn extractString(arena: std.mem.Allocator, payload: []const u8, field: []const u8) ?[]const u8 {
-    const pat = std.fmt.allocPrint(arena, "\"{s}\":\"", .{field}) catch return null;
-    const start = std.mem.indexOf(u8, payload, pat) orelse return null;
-    const s0 = start + pat.len;
-    const end = std.mem.indexOfPos(u8, payload, s0, "\"") orelse return null;
-    // 必须复制：payload 通常指向可复用的网络读缓冲，后续请求会把它覆盖掉，
-    // 直接把切片交出去会在下一次请求后变成垃圾（曾导致网关 URL 出现乱码）。
-    return arena.dupe(u8, payload[s0..end]) catch null;
+    // 容忍键值之间/冒号两侧的空白：`"k":"v"` 与 `"k" : "v"` 都能取到。
+    // （历史上这里只认紧凑写法，虽然控制面目前返回紧凑 JSON，但把正确性押在
+    //   对端排版上属于隐性脆弱点——一旦上游改成带缩进的响应就会静默取不到值。）
+    const key = std.fmt.allocPrint(arena, "\"{s}\"", .{field}) catch return null;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, payload, i, key)) |k| {
+        var j = k + key.len;
+        while (j < payload.len and isJsonSpace(payload[j])) j += 1;
+        if (j < payload.len and payload[j] == ':') {
+            j += 1;
+            while (j < payload.len and isJsonSpace(payload[j])) j += 1;
+            if (j < payload.len and payload[j] == '"') {
+                const s0 = j + 1;
+                const e = std.mem.indexOfPos(u8, payload, s0, "\"") orelse return null;
+                // 必须复制：payload 通常指向可复用的网络读缓冲，后续请求会把它覆盖掉，
+                // 直接把切片交出去会在下一次请求后变成垃圾（曾导致网关 URL 出现乱码）。
+                return arena.dupe(u8, payload[s0..e]) catch null;
+            }
+        }
+        i = k + key.len; // 该出现处不是字符串值（可能是嵌套同名键），继续找下一个
+    }
+    return null;
+}
+
+fn isJsonSpace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
 
 // ---------------- 文件操作 ----------------

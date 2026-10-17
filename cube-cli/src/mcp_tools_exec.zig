@@ -13,8 +13,8 @@ const ToolResult = types.ToolResult;
 fn tExec(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const cmd = a.str(srv.arena, "command") catch return srv.argError(a);
-    const cwd = a.strOpt("cwd");
-    const user = a.strOpt("user");
+    const cwd = try a.strOpt(srv.arena, "cwd");
+    const user = try a.strOpt(srv.arena, "user");
     const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 0)));
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
 
@@ -44,8 +44,8 @@ fn tExec(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tExecAsync(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const cmd = a.str(srv.arena, "command") catch return srv.argError(a);
-    const cwd = a.strOpt("cwd");
-    const user = a.strOpt("user");
+    const cwd = try a.strOpt(srv.arena, "cwd");
+    const user = try a.strOpt(srv.arena, "user");
     const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 0)));
     const no_stdin = a.boolOr(srv.arena, "no_stdin", false) catch return srv.argError(a);
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
@@ -70,7 +70,7 @@ fn tExecLogs(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const off_out: u64 = @intCast(@max(0, try a.intOr(srv.arena, "offset", 0)));
     const off_err: u64 = @intCast(@max(0, try a.intOr(srv.arena, "stderr_offset", 0)));
     const limit: u64 = @intCast(@max(0, try a.intOr(srv.arena, "max", 0)));
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
 
     const r = sdk_exec.sandboxExecLogs(srv.sdk, sid, pid, user, off_out, off_err, limit) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
@@ -99,8 +99,8 @@ fn tExecLogs(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tExecKill(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const pid = a.intReq(srv.arena, "pid") catch return srv.argError(a);
-    const user = a.strOpt("user");
-    const sig = a.strOpt("signal");
+    const user = try a.strOpt(srv.arena, "user");
+    const sig = try a.strOpt(srv.arena, "signal");
 
     sdk_exec.sandboxExecKill(srv.sdk, sid, pid, user, sig) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
@@ -116,7 +116,7 @@ fn tExecStdin(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const pid = a.intReq(srv.arena, "pid") catch return srv.argError(a);
     const data = a.str(srv.arena, "data") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
 
     sdk_exec.sandboxExecStdin(srv.sdk, sid, pid, user, data) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
@@ -128,10 +128,10 @@ fn tExecStdin(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tCode(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const code = a.str(srv.arena, "code") catch return srv.argError(a);
-    const mode = a.strOpt("mode") orelse "interp";
-    const lang = a.strOpt("lang") orelse "python";
+    const mode = try a.strOpt(srv.arena, "mode") orelse "interp";
+    const lang = try a.strOpt(srv.arena, "lang") orelse "python";
     const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 0)));
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
 
     const r = sdk_exec.sandboxCode(srv.sdk, sid, code, .{

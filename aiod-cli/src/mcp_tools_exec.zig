@@ -50,10 +50,10 @@ fn tExec(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
     const body = sdk_exec.run(srv.sdk, .{
         .command = command,
-        .cwd = a.strOpt("cwd"),
-        .shell = a.strOpt("shell"),
-        .user = a.strOpt("user"),
-        .session = a.strOpt("session"),
+        .cwd = try a.strOpt(srv.arena, "cwd"),
+        .shell = try a.strOpt(srv.arena, "shell"),
+        .user = try a.strOpt(srv.arena, "user"),
+        .session = try a.strOpt(srv.arena, "session"),
         .env_json = env_json,
         .timeout_ms = a.intOpt(srv.arena, "timeout") catch return srv.argError(a),
         .hard_timeout_s = a.intOpt(srv.arena, "hard_timeout") catch return srv.argError(a),
@@ -71,10 +71,10 @@ fn tExecAsync(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
     const body = sdk_exec.run(srv.sdk, .{
         .command = command,
-        .cwd = a.strOpt("cwd"),
-        .shell = a.strOpt("shell"),
-        .user = a.strOpt("user"),
-        .session = a.strOpt("session"),
+        .cwd = try a.strOpt(srv.arena, "cwd"),
+        .shell = try a.strOpt(srv.arena, "shell"),
+        .user = try a.strOpt(srv.arena, "user"),
+        .session = try a.strOpt(srv.arena, "session"),
         .env_json = env_json,
         .hard_timeout_s = a.intOpt(srv.arena, "hard_timeout") catch return srv.argError(a),
         .max_output = a.intOpt(srv.arena, "max_output") catch return srv.argError(a),
@@ -110,7 +110,7 @@ fn tExecLogs(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tExecKill(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const cid = a.str(srv.arena, "command_id") catch return srv.argError(a);
-    const sig = a.strOpt("signal");
+    const sig = try a.strOpt(srv.arena, "signal");
     const body = sdk_exec.kill(srv.sdk, cid, sig) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -133,7 +133,7 @@ fn tExecStdin(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tSessionCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "session_id") catch return srv.argError(a);
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
-    const body = sdk_exec.sessionCreate(srv.sdk, sid, a.strOpt("cwd"), a.strOpt("user"), env_json) catch |e| return switch (e) {
+    const body = sdk_exec.sessionCreate(srv.sdk, sid, try a.strOpt(srv.arena, "cwd"), try a.strOpt(srv.arena, "user"), env_json) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };

@@ -12,18 +12,18 @@ const Tool = types.Tool;
 const ToolResult = types.ToolResult;
 
 fn tSandboxCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const template = a.strOpt("template");
-    const need = a.strOpt("need") orelse "code";
+    const template = try a.strOpt(srv.arena, "template");
+    const need = try a.strOpt(srv.arena, "need") orelse "code";
     const timeout = try a.intOpt(srv.arena, "timeout");
-    const note = a.strOpt("note");
-    const agent = a.strOpt("agent");
-    const task = a.strOpt("task");
+    const note = try a.strOpt(srv.arena, "note");
+    const agent = try a.strOpt(srv.arena, "agent");
+    const task = try a.strOpt(srv.arena, "task");
     const env_vars = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
     const volumes = (try a.strArrayOpt(srv.arena, "volume")) orelse &.{};
-    const lifecycle = a.strOpt("lifecycle");
+    const lifecycle = try a.strOpt(srv.arena, "lifecycle");
     const auto_resume = try a.boolOpt(srv.arena, "auto_resume");
     const no_internet = try a.boolOpt(srv.arena, "no_internet");
-    const distribution_scope = a.strOpt("distribution_scope");
+    const distribution_scope = try a.strOpt(srv.arena, "distribution_scope");
     var mcp_json: ?[]const u8 = null;
     if (a.jsonOpt("mcp")) |m| {
         mcp_json = try argmod.Args.jsonText(srv.arena, m);
@@ -74,8 +74,8 @@ fn tSandboxCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tSandboxList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const md = (try a.strArrayOpt(srv.arena, "metadata")) orelse &.{};
-    const state = a.strOpt("state");
-    const limit = a.strOpt("limit");
+    const state = try a.strOpt(srv.arena, "state");
+    const limit = try a.strOpt(srv.arena, "limit");
     var v2 = try a.boolOr(srv.arena, "v2", false);
     if ((state != null or limit != null) and !v2) {
         v2 = true;
@@ -95,7 +95,7 @@ fn tSandboxList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tSandboxInfo(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
-    const wait_state = a.strOpt("wait");
+    const wait_state = try a.strOpt(srv.arena, "wait");
     const timeout_raw = try a.intOr(srv.arena, "timeout", 120);
     const timeout_s: u64 = @intCast(@max(0, @min(timeout_raw, 120)));
     const body = sdk_lifecycle.sandboxInfo(srv.sdk, sid, .{ .wait_state = wait_state, .timeout_s = timeout_s }) catch |e| return switch (e) {
@@ -108,11 +108,26 @@ fn tSandboxInfo(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tSandboxPause(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
+    const wait = (a.boolOpt(srv.arena, "wait") catch return srv.argError(a)) orelse false;
+    const timeout_s: u64 = @intCast(@max(0, a.intOr(srv.arena, "timeout", 60) catch return srv.argError(a)));
+
     sdk_lifecycle.sandboxPause(srv.sdk, sid) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };
-    return ToolResult.ok(std.fmt.allocPrint(srv.arena, "沙箱已暂停：{s}", .{sid}) catch "已暂停");
+
+    if (wait) {
+        // 与 CLI `pause --wait` 同语义：轮询到 paused，超时如实报错（不伪报成功）
+        _ = sdk_lifecycle.sandboxInfo(srv.sdk, sid, .{ .wait_state = "paused", .timeout_s = timeout_s }) catch |e| return switch (e) {
+            error.WaitTimeout => ToolResult.err(std.fmt.allocPrint(
+                srv.arena, "超时 {d}s：沙箱未进入 paused 状态", .{timeout_s},
+            ) catch "等待暂停超时"),
+            error.MissingConfig, error.HttpError => srv.sdkError(),
+            else => ToolResult.err(@errorName(e)),
+        };
+        return ToolResult.ok(std.fmt.allocPrint(srv.arena, "沙箱已暂停：{s}", .{sid}) catch "已暂停");
+    }
+    return ToolResult.ok(std.fmt.allocPrint(srv.arena, "暂停请求已发送：{s}（未等待状态；如需等待请传 wait=true）", .{sid}) catch "已暂停");
 }
 
 fn tSandboxResume(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
@@ -192,7 +207,7 @@ fn tSandboxClone(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const n_raw = try a.intOr(srv.arena, "n", 1);
     const n: usize = @intCast(@max(1, n_raw));
     const timeout = try a.intOpt(srv.arena, "timeout");
-    const note = a.strOpt("note");
+    const note = try a.strOpt(srv.arena, "note");
     const keep_snapshot = try a.boolOr(srv.arena, "keep_snapshot", false);
 
     const body = sdk_lifecycle.sandboxClone(srv.sdk, sid, .{
@@ -224,7 +239,7 @@ pub const tools = [_]Tool{
         .name = "sandbox_create",
         .description = "新建沙箱实例。支持按能力动态挑选模板（need: code/browser/desktop）或显式指定 template。",
         .schema =
-        \\{"type":"object","properties":{"template":{"type":"string","description":"模板 ID 或别名"},"need":{"type":"string","description":"所需能力等级（默认 code；可选 browser/desktop）"},"timeout":{"type":"integer","description":"沙箱超时存活秒数"},"note":{"type":"string","description":"沙箱备注/名称"},"agent":{"type":"string","description":"创建者/Agent 名称标识"},"task":{"type":"string","description":"关联的任务描述"},"env":{"type":"object","description":"环境变量注入键值对"},"volume":{"type":"array","items":{"type":"string"},"description":"持久卷挂载数组（卷名[:挂载路径]）"},"lifecycle":{"type":"string","description":"超时行为（kill 或 pause）"},"auto_resume":{"type":"boolean","description":"是否开启访问时自动唤醒"},"no_internet":{"type":"boolean","description":"是否禁止访问公网"},"distribution_scope":{"type":"string","description":"调度节点范围（逗号分隔）"},"mcp":{"type":"object","description":"MCP 服务端配置对象"}},"required":[]}
+        \\{"type":"object","properties":{"template":{"type":"string","description":"模板 ID 或服务端别名（本地 imageInfo 匹配请用 need / template_pick）"},"need":{"type":"string","description":"所需能力等级（默认 code；可选 browser/desktop）"},"timeout":{"type":"integer","description":"沙箱超时存活秒数"},"note":{"type":"string","description":"沙箱备注/名称"},"agent":{"type":"string","description":"创建者/Agent 名称标识"},"task":{"type":"string","description":"关联的任务描述"},"env":{"type":"object","description":"环境变量注入键值对"},"volume":{"type":"array","items":{"type":"string"},"description":"持久卷挂载数组（卷名[:挂载路径]）"},"lifecycle":{"type":"string","description":"超时行为（kill 或 pause）"},"auto_resume":{"type":"boolean","description":"是否开启访问时自动唤醒"},"no_internet":{"type":"boolean","description":"是否禁止访问公网"},"distribution_scope":{"type":"string","description":"调度节点范围（逗号分隔）"},"mcp":{"type":"object","description":"MCP 服务端配置对象"}},"required":[]}
         ,
         .handler = tSandboxCreate,
     },
@@ -248,7 +263,7 @@ pub const tools = [_]Tool{
         .name = "sandbox_pause",
         .description = "暂停沙箱（挂起快照，0 成本）。恢复用 sandbox_resume。",
         .schema =
-        \\{"type":"object","properties":{"sandbox_id":{"type":"string","description":"沙箱 ID"}},"required":["sandbox_id"]}
+        \\{"type":"object","properties":{"sandbox_id":{"type":"string","description":"沙箱 ID"},"wait":{"type":"boolean","description":"是否等待沙箱真正进入 paused（默认 false）"},"timeout":{"type":"integer","description":"wait 的上限秒数，默认 60"}},"required":["sandbox_id"]}
         ,
         .handler = tSandboxPause,
     },

@@ -28,16 +28,27 @@ from tests.mock_cube_server import MockCubeServer
 
 
 def get_vm_rss_kb(pid: int) -> int:
-    """Read VmRSS in kilobytes from /proc/<pid>/status."""
+    """读取进程 RSS（KB）。
+
+    优先 /proc/<pid>/status 的 VmRSS；回退 /proc/<pid>/statm（resident 页数 × 页大小）——
+    iSH/Alpine 精简环境只有 statm，没有 status。
+    **两者都读不到时返回 -1**：调用方必须据此判定"本机无法测量"，绝不能当成 0 增长
+    （否则门禁会静默变成永远通过）。
+    """
     try:
         with open(f"/proc/{pid}/status", "r") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
-                    parts = line.split()
-                    return int(parts[1])
+                    return int(line.split()[1])
+    except Exception:
+        pass
+    try:
+        with open(f"/proc/{pid}/statm", "r") as f:
+            resident_pages = int(f.read().split()[1])
+        return resident_pages * (os.sysconf("SC_PAGE_SIZE") // 1024)
     except Exception as e:
-        print(f"Warning: unable to read /proc/{pid}/status: {e}", file=sys.stderr)
-    return 0
+        print(f"Warning: 无法读取 /proc/{pid}/status 或 statm：{e}", file=sys.stderr)
+    return -1
 
 
 class McpProcess:
@@ -152,6 +163,10 @@ def run_single_stability_test(
 
             if i % step == 0:
                 rss = get_vm_rss_kb(pid)
+                if rss < 0:
+                    print("  [ERROR] 本机无法测量进程 RSS（既无 /proc/<pid>/status 也无 statm）；"
+                          "该门禁在本机不可用——请勿当作通过。")
+                    return None
                 samples.append((i, rss))
 
         duration = time.time() - t0

@@ -13,7 +13,7 @@ const ToolResult = types.ToolResult;
 
 fn tSnapCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
-    const name = a.strOpt("name");
+    const name = try a.strOpt(srv.arena, "name");
     const body = sdk_snapshot.snapshotCreate(srv.sdk, sid, name) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -25,9 +25,9 @@ fn tSnapCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tSnapList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const sid = a.strOpt("sandbox_id");
-    const backend = a.strOpt("backend");
-    const next_token = a.strOpt("next");
+    const sid = try a.strOpt(srv.arena, "sandbox_id");
+    const backend = try a.strOpt(srv.arena, "backend");
+    const next_token = try a.strOpt(srv.arena, "next");
     var limit: ?u32 = null;
     if (try a.intOpt(srv.arena, "limit")) |l| {
         if (l > 0) limit = @intCast(l);

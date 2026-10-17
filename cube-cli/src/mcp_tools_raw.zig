@@ -11,7 +11,7 @@ const ToolResult = types.ToolResult;
 fn tApiCall(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const method = a.str(srv.arena, "method") catch return srv.argError(a);
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
-    const body = a.strOpt("body");
+    const body = try a.strOpt(srv.arena, "body");
     const query = try a.objOpt(srv.arena, "query");
 
     const res = sdk_raw.apiCall(srv.sdk, method, path, body, query) catch |e| return switch (e) {

@@ -17,7 +17,7 @@ fn tFileRead(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
         .path = path,
         .start = a.intOpt(srv.arena, "start") catch return srv.argError(a),
         .end = a.intOpt(srv.arena, "end") catch return srv.argError(a),
-        .user = a.strOpt("user"),
+        .user = try a.strOpt(srv.arena, "user"),
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -38,10 +38,10 @@ fn tFileWrite(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
         .path = path,
         .content = content,
         .append = append,
-        .encoding = a.strOpt("encoding"),
+        .encoding = try a.strOpt(srv.arena, "encoding"),
         .leading_newline = leading_newline,
         .trailing_newline = trailing_newline,
-        .user = a.strOpt("user"),
+        .user = try a.strOpt(srv.arena, "user"),
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -53,7 +53,7 @@ fn tFileList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
     const body = sdk_files.list(srv.sdk, .{
         .path = path,
-        .user = a.strOpt("user"),
+        .user = try a.strOpt(srv.arena, "user"),
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -66,7 +66,7 @@ fn tFileStat(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const follow = (a.boolOpt(srv.arena, "follow_symlinks") catch return srv.argError(a)) orelse false;
     const body = sdk_files.stat(srv.sdk, .{
         .path = path,
-        .user = a.strOpt("user"),
+        .user = try a.strOpt(srv.arena, "user"),
         .follow_symlinks = follow,
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
@@ -76,8 +76,8 @@ fn tFileStat(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tFileTree(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const path = a.strOpt("path");
-    const user = a.strOpt("user");
+    const path = try a.strOpt(srv.arena, "path");
+    const user = try a.strOpt(srv.arena, "user");
     const body = sdk_files.treeText(srv.sdk, path, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -88,7 +88,7 @@ fn tFileTree(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tFileMkdir(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
     const parents = (a.boolOpt(srv.arena, "parents") catch return srv.argError(a)) orelse true;
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     const body = sdk_files.mkdir(srv.sdk, path, parents, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -99,7 +99,7 @@ fn tFileMkdir(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tFileDelete(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
     const recursive = (a.boolOpt(srv.arena, "recursive") catch return srv.argError(a)) orelse true;
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     const body = sdk_files.deleteFile(srv.sdk, path, recursive, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -111,7 +111,7 @@ fn tFileCopy(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const src = a.str(srv.arena, "from") catch return srv.argError(a);
     const dst = a.str(srv.arena, "to") catch return srv.argError(a);
     const overwrite = (a.boolOpt(srv.arena, "overwrite") catch return srv.argError(a)) orelse false;
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     const body = sdk_files.copy(srv.sdk, src, dst, overwrite, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -123,7 +123,7 @@ fn tFileMove(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const src = a.str(srv.arena, "from") catch return srv.argError(a);
     const dst = a.str(srv.arena, "to") catch return srv.argError(a);
     const overwrite = (a.boolOpt(srv.arena, "overwrite") catch return srv.argError(a)) orelse false;
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
     const body = sdk_files.move(srv.sdk, src, dst, overwrite, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -133,12 +133,12 @@ fn tFileMove(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tFileEdit(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
-    const old = a.strOpt("old");
-    const new = a.strOpt("new");
-    const mode = a.strOpt("replace_mode");
+    const old = try a.strOpt(srv.arena, "old");
+    const new = try a.strOpt(srv.arena, "new");
+    const mode = try a.strOpt(srv.arena, "replace_mode");
     const insert = a.intOpt(srv.arena, "insert") catch return srv.argError(a);
-    const text = a.strOpt("text");
-    const user = a.strOpt("user");
+    const text = try a.strOpt(srv.arena, "text");
+    const user = try a.strOpt(srv.arena, "user");
 
     if (old == null and insert == null) {
         return ToolResult.err("参数错误：需提供 old（字符串替换）或 insert（行号插入）参数");
@@ -166,7 +166,12 @@ fn tFileGrep(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const ignore_case = (a.boolOpt(srv.arena, "ignore_case") catch return srv.argError(a)) orelse false;
     const multiline = (a.boolOpt(srv.arena, "multiline") catch return srv.argError(a)) orelse false;
     const max_matches = a.intOpt(srv.arena, "max_matches") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const include = try a.strArrayOpt(srv.arena, "include");
+    const exclude = try a.strArrayOpt(srv.arena, "exclude");
+    const context = a.intOpt(srv.arena, "context") catch return srv.argError(a);
+    const offset = a.intOpt(srv.arena, "offset") catch return srv.argError(a);
+    const ftype = try a.strOpt(srv.arena, "type");
+    const user = try a.strOpt(srv.arena, "user");
 
     const body = sdk_files.grep(srv.sdk, .{
         .path = path,
@@ -176,6 +181,11 @@ fn tFileGrep(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
         .multiline = multiline,
         .max_matches = max_matches,
         .user = user,
+        .include = include,
+        .exclude = exclude,
+        .context = context,
+        .offset = offset,
+        .type = ftype,
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -186,7 +196,7 @@ fn tFileGrep(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tFileSearch(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const path = a.str(srv.arena, "path") catch return srv.argError(a);
     const pattern = a.str(srv.arena, "pattern") catch return srv.argError(a);
-    const user = a.strOpt("user");
+    const user = try a.strOpt(srv.arena, "user");
 
     const body = sdk_files.search(srv.sdk, path, pattern, user) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
@@ -280,7 +290,7 @@ pub const tools = [_]Tool{
         .name = "file_grep",
         .description = "在沙箱指定路径的文件或目录中搜索匹配的内容。",
         .schema =
-        \\{"type":"object","properties":{"path":{"type":"string","description":"搜索起始路径"},"pattern":{"type":"string","description":"搜索关键词或正则模式"},"fixed":{"type":"boolean","description":"是否按字面量精确匹配"},"ignore_case":{"type":"boolean","description":"是否忽略大小写"},"multiline":{"type":"boolean","description":"是否启用多行模式"},"max_matches":{"type":"integer","description":"最大返回结果数"},"user":{"type":"string","description":"执行用户"}},"required":["path","pattern"]}
+        \\{"type":"object","properties":{"path":{"type":"string","description":"搜索起始路径"},"pattern":{"type":"string","description":"搜索关键词或正则模式"},"fixed":{"type":"boolean","description":"是否按字面量精确匹配"},"ignore_case":{"type":"boolean","description":"是否忽略大小写"},"multiline":{"type":"boolean","description":"是否启用多行模式"},"max_matches":{"type":"integer","description":"最大返回结果数"},"user":{"type":"string","description":"执行用户"},"include":{"type":"array","items":{"type":"string"},"description":"文件名通配白名单，如 *.zig"},"exclude":{"type":"array","items":{"type":"string"},"description":"文件名通配黑名单"},"context":{"type":"integer","description":"前后各 N 行上下文"},"offset":{"type":"integer","description":"结果偏移（分页）"},"type":{"type":"string","description":"文件类型过滤，如 py / rust"}},"required":["path","pattern"]}
         ,
         .handler = tFileGrep,
     },

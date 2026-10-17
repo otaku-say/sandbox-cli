@@ -15,11 +15,11 @@ fn tPtyNew(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "session_id") catch return srv.argError(a);
     const body = sdk_pty.create(srv.sdk, .{
         .id = sid,
-        .cwd = a.strOpt("cwd"),
+        .cwd = try a.strOpt(srv.arena, "cwd"),
         .cols = a.intOpt(srv.arena, "cols") catch return srv.argError(a),
         .rows = a.intOpt(srv.arena, "rows") catch return srv.argError(a),
-        .retention = a.strOpt("retention"),
-        .user = a.strOpt("user"),
+        .retention = try a.strOpt(srv.arena, "retention"),
+        .user = try a.strOpt(srv.arena, "user"),
         .no_change_timeout = a.intOpt(srv.arena, "no_change_timeout") catch return srv.argError(a),
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
@@ -83,7 +83,7 @@ fn tPtyDelete(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tPtySignal(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "session_id") catch return srv.argError(a);
-    const sig = a.strOpt("signal") orelse "SIGINT";
+    const sig = try a.strOpt(srv.arena, "signal") orelse "SIGINT";
     const body = sdk_pty.signal(srv.sdk, sid, sig) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
