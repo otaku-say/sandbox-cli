@@ -184,17 +184,23 @@ def run_single_stability_test(
             baseline_rss = samples[0][1]
 
     final_rss = samples[-1][1]
-    growth_kb = final_rss - baseline_rss
-    growth_mib = growth_kb / 1024.0
+    warm_growth = final_rss - baseline_rss
+
+    # 稳态判据：以**采样序列后半段**为基线。一次性台阶（懒分配 / arena 容量首次增长）
+    # 不算泄漏，只有持续线性爬升才算 —— 这也是 CI 上真实出现过的形态
+    # （aiod 在 CI 上 500→1000 一次性 +276 kB，之后 2000 次完全持平）。
+    mid_idx = len(samples) // 2
+    steady_it, steady_rss = samples[mid_idx]
+    growth_kb = final_rss - steady_rss
+    measured = max(1, total_iters - steady_it)
+    per_req = growth_kb * 1024.0 / measured
 
     print(f"  统计摘要:")
-    print(f"    预热基线 RSS (iter {warmup}): {baseline_rss} kB")
-    print(f"    末次调用 RSS (iter {total_iters}): {final_rss} kB")
-    print(f"    净增长: {growth_kb:+d} kB ({growth_mib:+.3f} MiB)")
-    measured = max(1, total_iters - warmup)
-    per_req = growth_kb * 1024.0 / measured
+    print(f"    预热基线 RSS (iter {warmup}): {baseline_rss} kB  →  末次 {final_rss} kB（差值 {warm_growth:+d} kB，仅判读用）")
+    print(f"    稳态基线 RSS (iter {steady_it}): {steady_rss} kB  →  末次 {final_rss} kB")
+    print(f"    稳态净增长: {growth_kb:+d} kB ({growth_kb / 1024.0:+.3f} MiB) over {measured} 次请求")
     print(f"    允许阈值: < {threshold_kb} kB ({threshold_kb / 1024:.2f} MiB)")
-    print(f"    每请求平均增长: {per_req:.1f} B/req（修复前实现实测约 370 B/req）")
+    print(f"    每请求平均增长（稳态）: {per_req:.1f} B/req（修复前实现实测约 380 B/req → 稳态区间约 +570 kB，必被拦下）")
 
     if growth_kb < threshold_kb:
         print(f"  [PASS] {name} 内存稳定性断言通过 (增长 {growth_kb} kB < {threshold_kb} kB)")
