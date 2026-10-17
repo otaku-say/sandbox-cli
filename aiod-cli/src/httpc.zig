@@ -20,6 +20,25 @@ pub const Response = struct {
     }
 };
 
+/// 响应头生命周期契约：
+/// content_range 副本分配在线程局部 scratch 区（双缓冲 ArenaAllocator，每次请求前 reset(.retain_capacity)）。
+/// 契约规定：Response.content_range 仅在该次请求返回后、下一次同线程发起 HTTP 请求之前有效。
+/// 若调用方需要长期跨请求持有，必须自行复制（dupe）到自身 arena 中。
+threadlocal var scratch_arena_0 = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+threadlocal var scratch_arena_1 = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+threadlocal var scratch_slot: u1 = 0;
+
+fn nextScratchAllocator() std.mem.Allocator {
+    scratch_slot ^= 1;
+    if (scratch_slot == 1) {
+        _ = scratch_arena_1.reset(.retain_capacity);
+        return scratch_arena_1.allocator();
+    } else {
+        _ = scratch_arena_0.reset(.retain_capacity);
+        return scratch_arena_0.allocator();
+    }
+}
+
 pub fn request(
     client: *std.http.Client,
     method: Method,
@@ -59,12 +78,13 @@ pub fn request(
     // content-range 原文（小写头名；std.http 已规范化）。
     // 注意：h.value 指向连接读缓冲，req.deinit 后即释放，不能直接存进 Response
     // （调用方在请求返回后才读它，悬垂指针 = 网关链路稳定段错误，见 issue #1）。
-    // 复制到 smp_allocator（短进程不回收；与 cube-cli captureHeaders 同策略）。
+    // 复制到 scratch arena（受生命周期契约保护，每次请求前复用重置，避免常驻进程泄漏）。
+    const scratch = nextScratchAllocator();
     var cr: []const u8 = "";
     var it = response.head.iterateHeaders();
     while (it.next()) |h| {
         if (std.ascii.eqlIgnoreCase(h.name, "content-range")) {
-            cr = std.heap.smp_allocator.dupe(u8, h.value) catch "";
+            cr = scratch.dupe(u8, h.value) catch "";
             break;
         }
     }

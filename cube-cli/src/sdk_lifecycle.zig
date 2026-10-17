@@ -89,7 +89,7 @@ pub fn sandboxInfo(self: *Sdk, sid: []const u8, opt: InfoOptions) ![]const u8 {
     if (opt.wait_state) |target| {
         var i: u64 = 0;
         while (i < opt.timeout_s) : (i += 1) {
-            if (stateOf(res.body)) |s| {
+            if (stateOf(self.arena, res.body)) |s| {
                 if (std.mem.eql(u8, s, target)) break;
             }
             try std.Io.sleep(self.io, .fromSeconds(1), .awake);
@@ -99,9 +99,8 @@ pub fn sandboxInfo(self: *Sdk, sid: []const u8, opt: InfoOptions) ![]const u8 {
     return self.arena.dupe(u8, res.body);
 }
 
-fn stateOf(body: []const u8) ?[]const u8 {
-    const parsed = std.json.parseFromSlice(std.json.Value, std.heap.smp_allocator, body, .{}) catch return null;
-    defer parsed.deinit();
+fn stateOf(arena: std.mem.Allocator, body: []const u8) ?[]const u8 {
+    const parsed = std.json.parseFromSlice(std.json.Value, arena, body, .{}) catch return null;
     if (parsed.value != .object) return null;
     const v = parsed.value.object.get("state") orelse return null;
     return switch (v) {
