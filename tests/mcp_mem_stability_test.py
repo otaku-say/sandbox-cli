@@ -201,26 +201,26 @@ def run_single_stability_test(
     final_rss = samples[-1][1]
     warm_growth = final_rss - baseline_rss
 
-    # 判据（按 CI 实测校准）：
-    #   一次性台阶（懒分配 / arena 容量首次增长）不是泄漏 —— 实测 cube 在 CI 上
-    #   2000→2500 一次性 +272 kB 后完全持平，用「中点基线」会误报。
-    #   → 以**最近 K 个采样（含末次）的最小值**为基线：只要还在持续增长就会大于 0。
-    K = 3
-    tail = samples[-K:] if len(samples) >= K else samples
-    steady_rss = min(rss for _, rss in tail)
-    steady_it = min(it for it, rss in tail if rss == steady_rss)
-    growth_kb = final_rss - steady_rss
-    measured = max(1, total_iters - steady_it)
-    per_req = growth_kb * 1024.0 / measured
+    # v3 判据：用「分段增量的中位数」而不是某个基线点做差 ——
+    # 一次性台阶（懒分配/arena 容量增长）只会污染一个分段，真泄漏会污染所有分段。
+    # 背景：CI 上实测 cube 出现 2000→2500 一次性 +272 kB 后完全持平；若台阶落在末段，
+    # 任何「取某个采样点当基线」的做法都会误报。
+    deltas = [samples[i][1] - samples[i - 1][1] for i in range(1, len(samples))]
+    med_delta = sorted(deltas)[len(deltas) // 2] if deltas else 0
+    seg_reqs = step if step > 0 else 1
+    per_req = med_delta * 1024.0 / seg_reqs
+    # 阈值按「每段」折算：64 kB / 段（等价 128 B/req @ step=500）
+    med_threshold_kb = max(16, int(threshold_kb * seg_reqs / 500.0))
+    growth_kb = med_delta
 
     print(f"  统计摘要:")
-    print(f"    预热基线 RSS (iter {warmup}): {baseline_rss} kB  →  末次 {final_rss} kB（差值 {warm_growth:+d} kB，仅判读用）")
-    print(f"    近 {len(tail)} 次采样最小值 RSS (iter {steady_it}): {steady_rss} kB  →  末次 {final_rss} kB")
-    print(f"    尾段净增长: {growth_kb:+d} kB ({growth_kb / 1024.0:+.3f} MiB) over {measured} 次请求")
-    print(f"    允许阈值: < {threshold_kb} kB ({threshold_kb / 1024:.2f} MiB)")
-    print(f"    每请求平均增长（尾段）: {per_req:.1f} B/req（修复前实现约 380 B/req）")
+    print(f"    预热基线 RSS (iter {warmup}): {baseline_rss} kB  →  末次 {final_rss} kB（总差值 {warm_growth:+d} kB，仅判读用）")
+    print(f"    分段增量（每 {seg_reqs} 次请求）: {deltas}")
+    print(f"    分段增量中位数: {med_delta:+d} kB  →  每请求 {per_req:.1f} B/req")
+    print(f"    判定阈值: 中位段增量 < {med_threshold_kb} kB（等价 {med_threshold_kb * 1024.0 / seg_reqs:.0f} B/req）")
+    print(f"    说明：一次性台阶只污染一段 → 中位数≈0；持续泄漏每段都涨 → 必被抓住（泄漏版实测 380 B/req）")
 
-    if growth_kb < threshold_kb:
+    if growth_kb < med_threshold_kb:
         print(f"  [PASS] {name} 内存稳定性断言通过 (增长 {growth_kb} kB < {threshold_kb} kB)")
         return True
     else:
