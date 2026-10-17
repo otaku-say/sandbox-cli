@@ -191,7 +191,10 @@ def run_single_stability_test(
     print(f"    预热基线 RSS (iter {warmup}): {baseline_rss} kB")
     print(f"    末次调用 RSS (iter {total_iters}): {final_rss} kB")
     print(f"    净增长: {growth_kb:+d} kB ({growth_mib:+.3f} MiB)")
+    measured = max(1, total_iters - warmup)
+    per_req = growth_kb * 1024.0 / measured
     print(f"    允许阈值: < {threshold_kb} kB ({threshold_kb / 1024:.2f} MiB)")
+    print(f"    每请求平均增长: {per_req:.1f} B/req（修复前实现实测约 370 B/req）")
 
     if growth_kb < threshold_kb:
         print(f"  [PASS] {name} 内存稳定性断言通过 (增长 {growth_kb} kB < {threshold_kb} kB)")
@@ -208,7 +211,7 @@ def main():
     parser.add_argument("--iters", type=int, default=3000, help="总调用次数 (默认 3000)")
     parser.add_argument("--step", type=int, default=500, help="采样步长 (默认 500)")
     parser.add_argument("--warmup", type=int, default=500, help="预热步数，作为基线 (默认 500)")
-    parser.add_argument("--threshold-mib", type=float, default=1.0, help="允许的最大增长 MiB (默认 1.0)")
+    parser.add_argument("--threshold-mib", type=float, default=0.125, help="允许的最大增长 MiB (默认 0.125；反证：修复前实现 3000 次请求实测 +0.906 MiB，故该阈值能真正拦住这类泄漏)")
     args = parser.parse_args()
 
     threshold_kb = int(args.threshold_mib * 1024)
