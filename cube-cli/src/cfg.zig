@@ -22,4 +22,5 @@ pub fn proxyURL() ?[]const u8 {
     return getenv("CUBESANDBOX_PROXY_URL");
 }
 
+/// 版本号始终跟随上游 CubeSandbox（见 scripts/sdk-coverage.json 的 synced_version）。
 pub const version = "0.7.3";
