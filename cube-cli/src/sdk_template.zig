@@ -8,6 +8,33 @@ const envd = @import("envd.zig");
 
 const Sdk = sdkmod.Sdk;
 
+pub fn filterTemplatesJson(arena: std.mem.Allocator, body: []const u8, itype: ?[]const u8, status: ?[]const u8) ![]const u8 {
+    const v = std.json.parseFromSlice(std.json.Value, arena, body, .{}) catch return body;
+    if (v.value != .array) return body;
+    var w = std.Io.Writer.fixed(try arena.alloc(u8, 8 << 20));
+    try w.writeAll("[");
+    var first = true;
+    for (v.value.array.items) |it| {
+        if (itype) |x| {
+            if (!std.ascii.eqlIgnoreCase(tplFieldStr(it, "instanceType"), x)) continue;
+        }
+        if (status) |x| {
+            if (!std.ascii.eqlIgnoreCase(tplFieldStr(it, "status"), x)) continue;
+        }
+        if (!first) try w.writeAll(",");
+        first = false;
+        try w.print("{f}", .{std.json.fmt(it, .{})});
+    }
+    try w.writeAll("]");
+    return w.buffered();
+}
+
+fn tplFieldStr(v: std.json.Value, key: []const u8) []const u8 {
+    const f = jsonfmt.objGet(v, key) orelse return "";
+    if (f != .string) return "";
+    return f.string;
+}
+
 /// 查询所有模板（GET /templates）。返回响应体 JSON。
 pub fn templateList(self: *Sdk) ![]const u8 {
     const buf = try self.arena.alloc(u8, sdkmod.BUF);

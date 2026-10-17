@@ -106,6 +106,9 @@ fn tExecKill(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };
+    if (srv.sdk.last_status == 404) {
+        return ToolResult.ok(try std.fmt.allocPrint(srv.arena, "pid {d} 已不存在（可能已退出）", .{pid}));
+    }
     return ToolResult.ok(std.fmt.allocPrint(srv.arena, "已向 pid {d} 发送信号 {s}", .{ pid, sig orelse "SIGNAL_SIGKILL" }) catch "信号已发送");
 }
 
@@ -139,6 +142,7 @@ fn tCode(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
         .user = user,
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
+        error.BadMode => ToolResult.err("不支持的执行模式（支持 interp / kernel）"),
         error.BadLang => ToolResult.err("不支持的编程语言（支持 python / js / bash）"),
         else => ToolResult.err(@errorName(e)),
     };

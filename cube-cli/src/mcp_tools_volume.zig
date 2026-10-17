@@ -20,6 +20,12 @@ fn tVolList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tVolCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
+    if (a.has("name") and a.strOpt("name") == null) {
+        return ToolResult.err("参数错误：name 需要是字符串");
+    }
+    if (a.has("driver") and a.strOpt("driver") == null) {
+        return ToolResult.err("参数错误：driver 需要是字符串");
+    }
     const name = a.strOpt("name");
     const driver = a.strOpt("driver");
     const body = sdk_volume.volumeCreate(srv.sdk, name, driver) catch |e| return switch (e) {

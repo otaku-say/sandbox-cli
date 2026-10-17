@@ -88,13 +88,21 @@ pub fn sandboxInfo(self: *Sdk, sid: []const u8, opt: InfoOptions) ![]const u8 {
     var res = try self.control(.GET, path, null, buf);
     if (opt.wait_state) |target| {
         var i: u64 = 0;
-        while (i < opt.timeout_s) : (i += 1) {
-            if (stateOf(self.arena, res.body)) |s| {
-                if (std.mem.eql(u8, s, target)) break;
-            }
+        var reached = false;
+        if (stateOf(self.arena, res.body)) |s| {
+            if (std.mem.eql(u8, s, target)) reached = true;
+        }
+        while (!reached and i < opt.timeout_s) : (i += 1) {
             try std.Io.sleep(self.io, .fromSeconds(1), .awake);
             res = try self.control(.GET, path, null, buf);
+            if (stateOf(self.arena, res.body)) |s| {
+                if (std.mem.eql(u8, s, target)) {
+                    reached = true;
+                    break;
+                }
+            }
         }
+        if (!reached) return error.WaitTimeout;
     }
     return self.arena.dupe(u8, res.body);
 }

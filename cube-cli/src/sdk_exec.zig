@@ -274,6 +274,8 @@ pub fn sandboxCode(self: *Sdk, sid: []const u8, code: []const u8, opt: CodeOptio
             return error.HttpError;
         }
         return .{ .stdout = try self.arena.dupe(u8, res.body), .stderr = "", .exit_code = 0 };
+    } else if (!std.mem.eql(u8, opt.mode, "interp")) {
+        return error.BadMode;
     }
 
     const q = try shellQuote(self.arena, code);

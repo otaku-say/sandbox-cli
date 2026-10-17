@@ -74,11 +74,17 @@ fn tSandboxCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tSandboxList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const md = (try a.strArrayOpt(srv.arena, "metadata")) orelse &.{};
+    const state = a.strOpt("state");
+    const limit = a.strOpt("limit");
+    var v2 = try a.boolOr(srv.arena, "v2", false);
+    if ((state != null or limit != null) and !v2) {
+        v2 = true;
+    }
     const q = sdk_lifecycle.ListQuery{
         .metadata = md,
-        .state = a.strOpt("state"),
-        .limit = a.strOpt("limit"),
-        .v2 = try a.boolOr(srv.arena, "v2", false),
+        .state = state,
+        .limit = limit,
+        .v2 = v2,
     };
     const body = sdk_lifecycle.sandboxList(srv.sdk, q) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
@@ -90,9 +96,11 @@ fn tSandboxList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tSandboxInfo(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const wait_state = a.strOpt("wait");
-    const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 120)));
+    const timeout_raw = try a.intOr(srv.arena, "timeout", 120);
+    const timeout_s: u64 = @intCast(@max(0, @min(timeout_raw, 120)));
     const body = sdk_lifecycle.sandboxInfo(srv.sdk, sid, .{ .wait_state = wait_state, .timeout_s = timeout_s }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
+        error.WaitTimeout => ToolResult.err(try std.fmt.allocPrint(srv.arena, "超时 {d}s：沙箱未进入 {s} 状态", .{ timeout_s, wait_state.? })),
         else => ToolResult.err(@errorName(e)),
     };
     return ToolResult.ok(types.clampText(srv.arena, body));
