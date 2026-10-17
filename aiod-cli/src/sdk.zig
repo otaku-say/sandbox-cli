@@ -52,7 +52,7 @@ pub const Sdk = struct {
     /// 常规 JSON 请求：非 2xx 或信封 success=false 都返回错误（**不打印**）。
     pub fn request(self: *Sdk, method: httpc.Method, path: []const u8, payload: ?[]const u8, buf: []u8) !httpc.Response {
         const res = try self.requestRaw(method, path, payload, buf);
-        if (envelopeMessage(res.body)) |m| {
+        if (envelopeMessage(self.arena, res.body)) |m| {
             self.last_message = self.arena.dupe(u8, m) catch m;
             return error.ApiError;
         }
@@ -126,9 +126,8 @@ pub fn parse(arena: std.mem.Allocator, body: []const u8) ?std.json.Value {
 }
 
 /// 信封失败（HTTP 200 + success=false）时取 message；无则 null。
-pub fn envelopeMessage(body: []const u8) ?[]const u8 {
-    const p = std.json.parseFromSlice(std.json.Value, std.heap.smp_allocator, body, .{}) catch return null;
-    defer p.deinit();
+pub fn envelopeMessage(arena: std.mem.Allocator, body: []const u8) ?[]const u8 {
+    const p = std.json.parseFromSlice(std.json.Value, arena, body, .{}) catch return null;
     if (p.value != .object) return null;
     const s = p.value.object.get("success") orelse return null;
     if (s != .bool or s.bool) return null;
