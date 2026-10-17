@@ -9,6 +9,17 @@ CubeSandbox 命令行工具集，Zig 实现，静态单文件分发。
 | `cube-cli/` | `cube-cli` | **控制面**：沙箱生命周期、模板画像与选择、快照/分叉、持久卷 |
 | `aiod-cli/` | `aiod-cli` | **沙箱内 v2 API 遥控**：命令执行、文件传输、PTY 终端、浏览器、代码解释器 |
 
+### 版本号（始终跟随上游）
+
+两个 CLI 的版本号**跟随各自上游项目**，不因本仓库新增特性而单独递增：
+
+| CLI | 跟随的上游 | 当前版本 | 对照记录 |
+|---|---|---|---|
+| `cube-cli` | CubeSandbox（`TencentCloud/CubeSandbox`） | `0.7.3` | `scripts/sdk-coverage.json` 的 `synced_version` |
+| `aiod-cli` | aiod（沙箱内 v2 API 服务） | `0.9.2` | `scripts/v2-coverage.json` 的 `source` |
+
+上游发版后同步：先跑对应的漂移检查（见下），再同步版本号与命令面。
+
 ## DNS 容错（iSH 等环境必需）
 
 Zig 标准库的解析器**不会跳过不可达的 nameserver**。若 `/etc/resolv.conf` 把 IPv6

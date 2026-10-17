@@ -3,7 +3,8 @@
 //! 约定：本仓库不出现任何真实主机名 / IP / 凭据，全部由环境变量注入。
 const std = @import("std");
 
-pub const version = "0.3.0";
+/// 版本号始终跟随上游 aiod（见 scripts/v2-coverage.json 的 source 字段）。
+pub const version = "0.9.2";
 
 pub fn getenv(name: [*:0]const u8) ?[]const u8 {
     const p = std.c.getenv(name) orelse return null;
