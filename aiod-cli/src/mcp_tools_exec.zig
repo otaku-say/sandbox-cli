@@ -18,11 +18,15 @@ pub fn renderRun(srv: *Server, body: []const u8) anyerror![]const u8 {
     const id = sdkmod.fieldStr(v, "command_id") orelse "";
     const status = sdkmod.fieldStr(v, "status") orelse "";
     const exit_code = sdkmod.fieldInt(v, "exit_code");
+    const offset = sdkmod.fieldInt(v, "offset");
+    const stderr_offset = sdkmod.fieldInt(v, "stderr_offset");
     const stdout = sdkmod.fieldStr(v, "stdout") orelse "";
     const stderr = sdkmod.fieldStr(v, "stderr") orelse "";
     var w = std.Io.Writer.fixed(try srv.arena.alloc(u8, stdout.len + stderr.len + 4096));
     try w.print("command_id={s} status={s}", .{ id, status });
     if (exit_code) |c| try w.print(" exit_code={d}", .{c});
+    if (offset) |o| try w.print(" offset={d}", .{o});
+    if (stderr_offset) |so| try w.print(" stderr_offset={d}", .{so});
     try w.writeAll("\n");
     if (stdout.len > 0) {
         try w.writeAll("--- stdout ---\n");
@@ -35,6 +39,7 @@ pub fn renderRun(srv: *Server, body: []const u8) anyerror![]const u8 {
         if (stderr[stderr.len - 1] != '\n') try w.writeAll("\n");
     }
     if (stdout.len == 0 and stderr.len == 0) {
+        if (id.len > 0 or status.len > 0) return w.buffered();
         return body;
     }
     return w.buffered();
