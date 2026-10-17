@@ -69,11 +69,18 @@ pub const Args = struct {
         return v.string;
     }
 
-    pub fn strOpt(self: Args, name: []const u8) ?[]const u8 {
+    /// 可选字符串：**给了就必须是字符串**。
+    /// 类型不对时返回参数错误，而不是静默忽略——静默忽略会让模型以为参数生效了，
+    /// 实际却走了默认值（例如把 user/cwd 传成数字）。
+    pub fn strOpt(self: *Args, arena: std.mem.Allocator, name: []const u8) ArgError!?[]const u8 {
         const v = self.get(name) orelse return null;
         return switch (v) {
             .string => |s| s,
-            else => null,
+            .null => null,
+            else => {
+                self.setf(arena, "{s} 需要是字符串（收到 {s}）", .{ name, typeName(v) });
+                return ArgError.Arg;
+            },
         };
     }
 

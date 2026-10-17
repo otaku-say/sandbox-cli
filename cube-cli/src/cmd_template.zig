@@ -191,30 +191,7 @@ fn truncEllipsis(s: []const u8, n: usize) []const u8 {
 
 /// 过滤 JSON 数组（instanceType / status 大小写不敏感）；非数组原样返回。
 fn filterTemplatesJson(c: *Ctx, body: []const u8, itype: ?[]const u8, status: ?[]const u8) ![]const u8 {
-    const v = std.json.parseFromSlice(std.json.Value, c.arena, body, .{}) catch return body;
-    if (v.value != .array) return body;
-    var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 8 << 20));
-    try w.writeAll("[");
-    var first = true;
-    for (v.value.array.items) |it| {
-        if (itype) |x| {
-            if (!std.ascii.eqlIgnoreCase(tplFieldStr(it, "instanceType"), x)) continue;
-        }
-        if (status) |x| {
-            if (!std.ascii.eqlIgnoreCase(tplFieldStr(it, "status"), x)) continue;
-        }
-        if (!first) try w.writeAll(",");
-        first = false;
-        try w.print("{f}", .{std.json.fmt(it, .{})});
-    }
-    try w.writeAll("]");
-    return w.buffered();
-}
-
-fn tplFieldStr(v: std.json.Value, key: []const u8) []const u8 {
-    const f = jsonfmt.objGet(v, key) orelse return "";
-    if (f != .string) return "";
-    return f.string;
+    return sdk_template.filterTemplatesJson(c.arena, body, itype, status);
 }
 
 /// tpl-caps [<模板ID>] [--probe] [--prune] [--json]

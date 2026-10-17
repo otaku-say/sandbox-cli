@@ -13,7 +13,7 @@ const ToolResult = types.ToolResult;
 
 fn tSnapCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
-    const name = a.strOpt("name");
+    const name = try a.strOpt(srv.arena, "name");
     const body = sdk_snapshot.snapshotCreate(srv.sdk, sid, name) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -25,9 +25,9 @@ fn tSnapCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tSnapList(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const sid = a.strOpt("sandbox_id");
-    const backend = a.strOpt("backend");
-    const next_token = a.strOpt("next");
+    const sid = try a.strOpt(srv.arena, "sandbox_id");
+    const backend = try a.strOpt(srv.arena, "backend");
+    const next_token = try a.strOpt(srv.arena, "next");
     var limit: ?u32 = null;
     if (try a.intOpt(srv.arena, "limit")) |l| {
         if (l > 0) limit = @intCast(l);
@@ -49,10 +49,12 @@ fn tSnapRollback(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "sandbox_id") catch return srv.argError(a);
     const snap = a.str(srv.arena, "snapshot_id") catch return srv.argError(a);
     const wait = a.boolOr(srv.arena, "wait", false) catch return srv.argError(a);
-    const timeout_s: u64 = @intCast(@max(0, try a.intOr(srv.arena, "timeout", 60)));
+    const timeout_raw = try a.intOr(srv.arena, "timeout", 60);
+    const timeout_s: u64 = @intCast(@max(0, @min(timeout_raw, 120)));
 
     const body = sdk_snapshot.snapshotRollback(srv.sdk, sid, snap, wait, timeout_s) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError => srv.sdkError(),
+        error.WaitTimeout => ToolResult.err(try std.fmt.allocPrint(srv.arena, "超时 {d}s：沙箱未恢复到 running 状态", .{timeout_s})),
         else => ToolResult.err(@errorName(e)),
     };
     return ToolResult.ok(types.clampText(srv.arena, body));

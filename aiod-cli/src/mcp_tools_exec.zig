@@ -18,11 +18,15 @@ pub fn renderRun(srv: *Server, body: []const u8) anyerror![]const u8 {
     const id = sdkmod.fieldStr(v, "command_id") orelse "";
     const status = sdkmod.fieldStr(v, "status") orelse "";
     const exit_code = sdkmod.fieldInt(v, "exit_code");
+    const offset = sdkmod.fieldInt(v, "offset");
+    const stderr_offset = sdkmod.fieldInt(v, "stderr_offset");
     const stdout = sdkmod.fieldStr(v, "stdout") orelse "";
     const stderr = sdkmod.fieldStr(v, "stderr") orelse "";
     var w = std.Io.Writer.fixed(try srv.arena.alloc(u8, stdout.len + stderr.len + 4096));
     try w.print("command_id={s} status={s}", .{ id, status });
     if (exit_code) |c| try w.print(" exit_code={d}", .{c});
+    if (offset) |o| try w.print(" offset={d}", .{o});
+    if (stderr_offset) |so| try w.print(" stderr_offset={d}", .{so});
     try w.writeAll("\n");
     if (stdout.len > 0) {
         try w.writeAll("--- stdout ---\n");
@@ -35,6 +39,7 @@ pub fn renderRun(srv: *Server, body: []const u8) anyerror![]const u8 {
         if (stderr[stderr.len - 1] != '\n') try w.writeAll("\n");
     }
     if (stdout.len == 0 and stderr.len == 0) {
+        if (id.len > 0 or status.len > 0) return w.buffered();
         return body;
     }
     return w.buffered();
@@ -45,10 +50,10 @@ fn tExec(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
     const body = sdk_exec.run(srv.sdk, .{
         .command = command,
-        .cwd = a.strOpt("cwd"),
-        .shell = a.strOpt("shell"),
-        .user = a.strOpt("user"),
-        .session = a.strOpt("session"),
+        .cwd = try a.strOpt(srv.arena, "cwd"),
+        .shell = try a.strOpt(srv.arena, "shell"),
+        .user = try a.strOpt(srv.arena, "user"),
+        .session = try a.strOpt(srv.arena, "session"),
         .env_json = env_json,
         .timeout_ms = a.intOpt(srv.arena, "timeout") catch return srv.argError(a),
         .hard_timeout_s = a.intOpt(srv.arena, "hard_timeout") catch return srv.argError(a),
@@ -66,10 +71,10 @@ fn tExecAsync(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
     const body = sdk_exec.run(srv.sdk, .{
         .command = command,
-        .cwd = a.strOpt("cwd"),
-        .shell = a.strOpt("shell"),
-        .user = a.strOpt("user"),
-        .session = a.strOpt("session"),
+        .cwd = try a.strOpt(srv.arena, "cwd"),
+        .shell = try a.strOpt(srv.arena, "shell"),
+        .user = try a.strOpt(srv.arena, "user"),
+        .session = try a.strOpt(srv.arena, "session"),
         .env_json = env_json,
         .hard_timeout_s = a.intOpt(srv.arena, "hard_timeout") catch return srv.argError(a),
         .max_output = a.intOpt(srv.arena, "max_output") catch return srv.argError(a),
@@ -105,7 +110,7 @@ fn tExecLogs(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tExecKill(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const cid = a.str(srv.arena, "command_id") catch return srv.argError(a);
-    const sig = a.strOpt("signal");
+    const sig = try a.strOpt(srv.arena, "signal");
     const body = sdk_exec.kill(srv.sdk, cid, sig) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -128,7 +133,7 @@ fn tExecStdin(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 fn tSessionCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const sid = a.str(srv.arena, "session_id") catch return srv.argError(a);
     const env_json = a.objJsonText(srv.arena, "env") catch return srv.argError(a);
-    const body = sdk_exec.sessionCreate(srv.sdk, sid, a.strOpt("cwd"), a.strOpt("user"), env_json) catch |e| return switch (e) {
+    const body = sdk_exec.sessionCreate(srv.sdk, sid, try a.strOpt(srv.arena, "cwd"), try a.strOpt(srv.arena, "user"), env_json) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };

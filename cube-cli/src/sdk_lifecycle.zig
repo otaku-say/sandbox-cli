@@ -88,13 +88,21 @@ pub fn sandboxInfo(self: *Sdk, sid: []const u8, opt: InfoOptions) ![]const u8 {
     var res = try self.control(.GET, path, null, buf);
     if (opt.wait_state) |target| {
         var i: u64 = 0;
-        while (i < opt.timeout_s) : (i += 1) {
-            if (stateOf(self.arena, res.body)) |s| {
-                if (std.mem.eql(u8, s, target)) break;
-            }
+        var reached = false;
+        if (stateOf(self.arena, res.body)) |s| {
+            if (std.mem.eql(u8, s, target)) reached = true;
+        }
+        while (!reached and i < opt.timeout_s) : (i += 1) {
             try std.Io.sleep(self.io, .fromSeconds(1), .awake);
             res = try self.control(.GET, path, null, buf);
+            if (stateOf(self.arena, res.body)) |s| {
+                if (std.mem.eql(u8, s, target)) {
+                    reached = true;
+                    break;
+                }
+            }
         }
+        if (!reached) return error.WaitTimeout;
     }
     return self.arena.dupe(u8, res.body);
 }
@@ -132,6 +140,12 @@ pub const CreateResult = struct { body: []const u8, template_id: []const u8 };
 /// 新建沙箱。挑不到 READY 模板时返回 error.TemplateUnavailable（不拿假 ID 硬发请求）。
 pub fn sandboxCreate(self: *Sdk, opt: CreateOptions) !CreateResult {
     var tpl = opt.template orelse "";
+    if (tpl.len > 0) {
+        // 模板别名 → templateID（与 CLI `new --template=<别名>` 的服务端别名解析一致）；
+        // 解析不到就原样透传，交给服务端处理。
+        const sdk_template = @import("sdk_template.zig");
+        if (sdk_template.resolveAliasRef(self, tpl)) |id| tpl = id;
+    }
     if (tpl.len == 0) {
         const sdk_template = @import("sdk_template.zig");
         const picked = sdk_template.templatePick(self, opt.need) catch return error.TemplateUnavailable;

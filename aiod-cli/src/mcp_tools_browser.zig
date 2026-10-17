@@ -18,17 +18,17 @@ fn tBrowserInfo(srv: *Server, _: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tBrowserNavigate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const url = a.strOpt("url");
-    const history = a.strOpt("history");
+    const url = try a.strOpt(srv.arena, "url");
+    const history = try a.strOpt(srv.arena, "history");
     if (url == null and history == null) {
         return ToolResult.err("参数错误：需提供 url（网页地址）或 history（back/forward/reload）参数");
     }
     const body = sdk_browser.navigate(srv.sdk, .{
         .url = url,
         .history = history,
-        .wait_until = a.strOpt("wait"),
+        .wait_until = try a.strOpt(srv.arena, "wait"),
         .timeout = a.intOpt(srv.arena, "timeout") catch return srv.argError(a),
-        .tab_id = a.strOpt("tab"),
+        .tab_id = try a.strOpt(srv.arena, "tab"),
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -47,12 +47,12 @@ fn tBrowserEvaluate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tBrowserClick(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const sel = a.strOpt("selector");
-    const ref = a.strOpt("ref");
+    const sel = try a.strOpt(srv.arena, "selector");
+    const ref = try a.strOpt(srv.arena, "ref");
     if (sel == null and ref == null) {
         return ToolResult.err("参数错误：需提供 selector（CSS 选择器）或 ref（快照元素引用）参数之一");
     }
-    const body = sdk_browser.click(srv.sdk, sel, ref, a.strOpt("tab")) catch |e| return switch (e) {
+    const body = sdk_browser.click(srv.sdk, sel, ref, try a.strOpt(srv.arena, "tab")) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };
@@ -60,13 +60,13 @@ fn tBrowserClick(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tBrowserFill(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const sel = a.strOpt("selector");
-    const ref = a.strOpt("ref");
+    const sel = try a.strOpt(srv.arena, "selector");
+    const ref = try a.strOpt(srv.arena, "ref");
     if (sel == null and ref == null) {
         return ToolResult.err("参数错误：需提供 selector（CSS 选择器）或 ref（快照元素引用）参数之一");
     }
-    const val = a.strOpt("value") orelse "";
-    const body = sdk_browser.fill(srv.sdk, sel, ref, val, a.strOpt("tab")) catch |e| return switch (e) {
+    const val = try a.strOpt(srv.arena, "value") orelse "";
+    const body = sdk_browser.fill(srv.sdk, sel, ref, val, try a.strOpt(srv.arena, "tab")) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };
@@ -113,7 +113,7 @@ fn tBrowserScreenshot(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tBrowserTabNew(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const url = a.strOpt("url");
+    const url = try a.strOpt(srv.arena, "url");
     const body = sdk_browser.tabNew(srv.sdk, url) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -140,7 +140,7 @@ fn tBrowserTabClose(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tBrowserCookies(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const body = sdk_browser.cookies(srv.sdk, a.strOpt("url"), a.strOpt("domain")) catch |e| return switch (e) {
+    const body = sdk_browser.cookies(srv.sdk, try a.strOpt(srv.arena, "url"), try a.strOpt(srv.arena, "domain")) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };
@@ -170,9 +170,9 @@ fn tBrowserCookieSet(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tBrowserCookieDelete(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const name = a.strOpt("name");
+    const name = try a.strOpt(srv.arena, "name");
     const all = (a.boolOpt(srv.arena, "all") catch return srv.argError(a)) orelse false;
-    const body = sdk_browser.cookieDelete(srv.sdk, name, all, a.strOpt("url"), a.strOpt("domain")) catch |e| return switch (e) {
+    const body = sdk_browser.cookieDelete(srv.sdk, name, all, try a.strOpt(srv.arena, "url"), try a.strOpt(srv.arena, "domain")) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };
@@ -181,7 +181,7 @@ fn tBrowserCookieDelete(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tBrowserUpload(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const paths = (a.strArrayOpt(srv.arena, "paths") catch return srv.argError(a)) orelse return ToolResult.err("参数错误：paths 为必填参数");
-    const body = sdk_browser.upload(srv.sdk, paths, a.strOpt("selector"), a.strOpt("ref"), a.strOpt("tab")) catch |e| return switch (e) {
+    const body = sdk_browser.upload(srv.sdk, paths, try a.strOpt(srv.arena, "selector"), try a.strOpt(srv.arena, "ref"), try a.strOpt(srv.arena, "tab")) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
     };
@@ -200,7 +200,7 @@ fn tBrowserNetwork(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tBrowserConfig(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     var body_res: []const u8 = "";
-    if (a.strOpt("resolution")) |v| {
+    if (try a.strOpt(srv.arena, "resolution")) |v| {
         const xi = std.mem.indexOfScalar(u8, v, 'x') orelse
             std.mem.indexOfScalar(u8, v, 'X') orelse return ToolResult.err("参数错误：分辨率格式需为 WxH（如 1280x800）");
         const payload = try std.fmt.allocPrint(srv.arena, "{{\"resolution\":{{\"width\":{s},\"height\":{s}}}}}", .{ v[0..xi], v[xi + 1 ..] });
@@ -221,7 +221,7 @@ fn tBrowserCdp(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
         params_json = argmod.Args.jsonText(srv.arena, p) catch return srv.argError(a);
     }
     const browser = (a.boolOpt(srv.arena, "browser") catch return srv.argError(a)) orelse false;
-    const tab = a.strOpt("tab");
+    const tab = try a.strOpt(srv.arena, "tab");
     const body = sdk_browser.cdp(srv.sdk, method, params_json, browser, tab) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),

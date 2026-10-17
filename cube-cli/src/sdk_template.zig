@@ -8,6 +8,33 @@ const envd = @import("envd.zig");
 
 const Sdk = sdkmod.Sdk;
 
+pub fn filterTemplatesJson(arena: std.mem.Allocator, body: []const u8, itype: ?[]const u8, status: ?[]const u8) ![]const u8 {
+    const v = std.json.parseFromSlice(std.json.Value, arena, body, .{}) catch return body;
+    if (v.value != .array) return body;
+    var w = std.Io.Writer.fixed(try arena.alloc(u8, 8 << 20));
+    try w.writeAll("[");
+    var first = true;
+    for (v.value.array.items) |it| {
+        if (itype) |x| {
+            if (!std.ascii.eqlIgnoreCase(tplFieldStr(it, "instanceType"), x)) continue;
+        }
+        if (status) |x| {
+            if (!std.ascii.eqlIgnoreCase(tplFieldStr(it, "status"), x)) continue;
+        }
+        if (!first) try w.writeAll(",");
+        first = false;
+        try w.print("{f}", .{std.json.fmt(it, .{})});
+    }
+    try w.writeAll("]");
+    return w.buffered();
+}
+
+fn tplFieldStr(v: std.json.Value, key: []const u8) []const u8 {
+    const f = jsonfmt.objGet(v, key) orelse return "";
+    if (f != .string) return "";
+    return f.string;
+}
+
 /// 查询所有模板（GET /templates）。返回响应体 JSON。
 pub fn templateList(self: *Sdk) ![]const u8 {
     const buf = try self.arena.alloc(u8, sdkmod.BUF);
@@ -16,6 +43,18 @@ pub fn templateList(self: *Sdk) ![]const u8 {
 }
 
 /// 查询单个模板详情（GET /templates/<id>）。返回响应体 JSON。
+/// 服务端模板别名解析：GET /templates/aliases/<name> → templateID。
+/// 解析不到返回 null（调用方保持 CLI 的兜底：原样把值交给服务端）。
+pub fn resolveAliasRef(self: *Sdk, name: []const u8) ?[]const u8 {
+    if (name.len == 0) return null;
+    const enc = jsonfmt.qenc(self.arena, name, false) catch return null;
+    const path = std.fmt.allocPrint(self.arena, "/templates/aliases/{s}", .{enc}) catch return null;
+    const buf = self.arena.alloc(u8, 1 << 20) catch return null;
+    const res = self.controlRaw(.GET, path, null, &.{}, buf) catch return null;
+    if (!res.ok()) return null;
+    return envd.extractString(self.arena, res.body, "templateID");
+}
+
 pub fn templateInfo(self: *Sdk, tid: []const u8) ![]const u8 {
     const path = try std.fmt.allocPrint(self.arena, "/templates/{s}", .{tid});
     const buf = try self.arena.alloc(u8, sdkmod.BUF);

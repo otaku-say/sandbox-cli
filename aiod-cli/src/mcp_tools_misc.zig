@@ -13,8 +13,8 @@ fn tCodeRun(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const code = a.str(srv.arena, "code") catch return srv.argError(a);
     const body = sdk_misc.codeRun(srv.sdk, .{
         .code = code,
-        .language = a.strOpt("lang"),
-        .session_id = a.strOpt("session"),
+        .language = try a.strOpt(srv.arena, "lang"),
+        .session_id = try a.strOpt(srv.arena, "session"),
         .timeout = a.intOpt(srv.arena, "timeout") catch return srv.argError(a),
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
@@ -32,7 +32,7 @@ fn tCodeInfo(srv: *Server, _: *argmod.Args) anyerror!ToolResult {
 }
 
 fn tWatchCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
-    const path = a.strOpt("path");
+    const path = try a.strOpt(srv.arena, "path");
     const recursive = (a.boolOpt(srv.arena, "recursive") catch return srv.argError(a)) orelse false;
     const debounce = a.intOpt(srv.arena, "debounce") catch return srv.argError(a);
     const exclude = a.strArrayOpt(srv.arena, "exclude") catch return srv.argError(a);
@@ -53,7 +53,7 @@ fn tWatchCreate(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tWatchPoll(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const wid = a.str(srv.arena, "watcher_id") catch return srv.argError(a);
-    const cursor = a.strOpt("cursor");
+    const cursor = try a.strOpt(srv.arena, "cursor");
     const limit = (a.intOpt(srv.arena, "limit") catch return srv.argError(a)) orelse 100;
     const timeout = (a.intOpt(srv.arena, "timeout") catch return srv.argError(a)) orelse 30;
 

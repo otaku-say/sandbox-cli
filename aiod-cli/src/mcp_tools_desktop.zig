@@ -59,11 +59,11 @@ fn tDesktopWindows(srv: *Server, _: *argmod.Args) anyerror!ToolResult {
 
 fn tDesktopA11y(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const body = sdk_desktop.a11y(srv.sdk, .{
-        .scope = a.strOpt("scope"),
+        .scope = try a.strOpt(srv.arena, "scope"),
         .max_depth = a.intOpt(srv.arena, "max_depth") catch return srv.argError(a),
         .max_nodes = a.intOpt(srv.arena, "max_nodes") catch return srv.argError(a),
-        .role = a.strOpt("role"),
-        .name = a.strOpt("name"),
+        .role = try a.strOpt(srv.arena, "role"),
+        .name = try a.strOpt(srv.arena, "name"),
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -73,17 +73,17 @@ fn tDesktopA11y(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tDesktopA11yNodes(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const body = sdk_desktop.a11yNodes(srv.sdk, .{
-        .scope = a.strOpt("scope"),
+        .scope = try a.strOpt(srv.arena, "scope"),
         .max_depth = a.intOpt(srv.arena, "max_depth") catch return srv.argError(a),
         .max_nodes = a.intOpt(srv.arena, "max_nodes") catch return srv.argError(a),
-        .role = a.strOpt("role"),
-        .name = a.strOpt("name"),
-        .match = a.strOpt("match"),
-        .states = a.strOpt("states"),
+        .role = try a.strOpt(srv.arena, "role"),
+        .name = try a.strOpt(srv.arena, "name"),
+        .match = try a.strOpt(srv.arena, "match"),
+        .states = try a.strOpt(srv.arena, "states"),
         .include_offscreen = a.boolOpt(srv.arena, "include_offscreen") catch return srv.argError(a),
         .timeout_ms = a.intOpt(srv.arena, "timeout_ms") catch return srv.argError(a),
         .limit = a.intOpt(srv.arena, "limit") catch return srv.argError(a),
-        .node_id = a.strOpt("node_id"),
+        .node_id = try a.strOpt(srv.arena, "node_id"),
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
@@ -117,13 +117,13 @@ fn tDesktopActBatch(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
 
 fn tDesktopRecord(srv: *Server, a: *argmod.Args) anyerror!ToolResult {
     const body = sdk_desktop.record(srv.sdk, .{
-        .action = a.strOpt("action"),
+        .action = try a.strOpt(srv.arena, "action"),
         .fps = a.intOpt(srv.arena, "fps") catch return srv.argError(a),
         .crf = a.intOpt(srv.arena, "crf") catch return srv.argError(a),
         .max_duration = a.intOpt(srv.arena, "max_duration") catch return srv.argError(a),
         .width = a.intOpt(srv.arena, "width") catch return srv.argError(a),
         .height = a.intOpt(srv.arena, "height") catch return srv.argError(a),
-        .save_path = a.strOpt("save_path"),
+        .save_path = try a.strOpt(srv.arena, "save_path"),
     }) catch |e| return switch (e) {
         error.MissingConfig, error.HttpError, error.ApiError => srv.sdkError(),
         else => ToolResult.err(@errorName(e)),
