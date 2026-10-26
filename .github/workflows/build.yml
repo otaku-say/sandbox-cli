@@ -52,7 +52,7 @@ jobs:
 
       - name: 构建
         if: steps.probe.outputs.exists == 'true'
-        windows-directory: ${{ matrix.tool }}
+        working-directory: ${{ matrix.tool }}
         shell: bash
         run: |
           set -o pipefail
