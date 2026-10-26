@@ -25,32 +25,18 @@ const ws_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 // ---------------- 传输层：plain socket / TLS ----------------
 
-/// socket fd ⇄ tls13.Stream 适配器（裸 syscall；musl 静态环境可用）。
+/// socket fd ⇄ tls13.Stream 适配器（std.posix 封装，Linux / macOS 通用）。
 const FdStream = struct {
-    fd: std.os.linux.fd_t,
+    fd: std.posix.fd_t,
 
     fn readFn(ctx: ?*anyopaque, buf: []u8) anyerror!usize {
         const self: *FdStream = @ptrCast(@alignCast(ctx.?));
-        while (true) {
-            const rc = std.os.linux.read(self.fd, buf.ptr, buf.len);
-            if (std.os.linux.errno(rc) != .SUCCESS) {
-                if (std.os.linux.errno(rc) == .INTR) continue;
-                return error.ReadFailed;
-            }
-            return rc; // 0 = EOF
-        }
+        return std.posix.read(self.fd, buf) catch return error.ReadFailed; // 0 = EOF
     }
 
     fn writeFn(ctx: ?*anyopaque, buf: []const u8) anyerror!usize {
         const self: *FdStream = @ptrCast(@alignCast(ctx.?));
-        while (true) {
-            const rc = std.os.linux.write(self.fd, buf.ptr, buf.len);
-            if (std.os.linux.errno(rc) != .SUCCESS) {
-                if (std.os.linux.errno(rc) == .INTR) continue;
-                return error.WriteFailed;
-            }
-            return rc;
-        }
+        return std.posix.write(self.fd, buf) catch return error.WriteFailed;
     }
 };
 
@@ -211,18 +197,16 @@ pub const Conn = struct {
     }
 };
 
-/// 向 socket fd 写全部字节（0.17 的 Stream 没有 write，用裸 syscall）。
-fn writeAllFd(fd: std.os.linux.fd_t, data: []const u8) !void {
+/// 向 socket fd 写全部字节（0.17 的 Stream 没有 write，用 std.posix 封装）。
+fn writeAllFd(fd: std.posix.fd_t, data: []const u8) !void {
     var off: usize = 0;
     while (off < data.len) {
-        const rc = std.os.linux.write(fd, data.ptr + off, data.len - off);
-        if (std.os.linux.errno(rc) != .SUCCESS) {
-            if (std.os.linux.errno(rc) == .INTR) continue;
-            std.debug.print("[diag] linux.write errno={d} (off={d} len={d})\n", .{ @intFromEnum(std.os.linux.errno(rc)), off, data.len });
+        const n = std.posix.write(fd, data[off..]) catch |e| {
+            std.debug.print("[diag] write err: {t} (off={d} len={d})\n", .{ e, off, data.len });
             return error.WriteFailed;
-        }
-        if (rc == 0) return error.WriteFailed;
-        off += rc;
+        };
+        if (n == 0) return error.WriteFailed;
+        off += n;
     }
 }
 

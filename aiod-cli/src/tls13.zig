@@ -18,7 +18,6 @@
 //! 调试输出默认关闭；`AIO_TLS_DEBUG=1` 打开。证书：默认做主机名校验 +
 //! CertificateVerify 验签；完整链验证暂未实现（失败时给出明确错误）。
 const std = @import("std");
-const linux = std.os.linux;
 const mem = std.mem;
 
 const Sha256 = std.crypto.hash.sha2.Sha256;
@@ -110,9 +109,7 @@ pub const Stream = struct {
 
 // ============================== raw syscalls ==============================
 
-fn isErr(rc: usize) bool {
-    return linux.errno(rc) != .SUCCESS;
-}
+
 
 // ============================== AEAD plumbing ==============================
 
@@ -401,11 +398,8 @@ fn hex(b: []const u8) void {
 // ============================== ClientHello ==============================
 
 fn randBytes(b: []u8) !void {
-    const rc = linux.getrandom(b.ptr, b.len, 0);
-    if (isErr(rc) or rc != b.len) {
-        std.debug.print("[crypto] getrandom failed errno={d}\n", .{@intFromEnum(linux.errno(rc))});
-        return error.NoEntropy;
-    }
+    // 跨平台熵源：Linux 走 getrandom，macOS 走 arc4random（由 std 内部选路）。
+    std.crypto.random.bytes(b);
 }
 
 const SIG_SCHEMES = [_]u16{
