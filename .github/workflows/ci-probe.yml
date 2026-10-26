@@ -1,0 +1,33 @@
+name: ci-probe
+
+on:
+  push:
+    branches: [ci/probe]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: 探测 std 接口
+        run: |
+          ZIGBIN=$(command -v zig)
+          ZLIB=$(dirname "$ZIGBIN")/lib/std
+          echo "zig=$($ZIGBIN version)  lib=$ZLIB" > probe.txt
+          echo "=== posix.zig: write/read/getrandom 声明 ===" >> probe.txt
+          grep -nE "^pub (fn|const) (write|read|getrandom|arc4random|getentropy)" "$ZLIB/posix.zig" >> probe.txt || true
+          echo "=== posix.zig: 所有含 write 的 pub fn ===" >> probe.txt
+          grep -nE "^pub fn [a-zA-Z_]*write[a-zA-Z_]*" "$ZLIB/posix.zig" >> probe.txt || true
+          echo "=== c.zig: write/read/getentropy/arc4random ===" >> probe.txt
+          grep -nE "(write|read|getentropy|arc4random)" "$ZLIB/c.zig" >> probe.txt || true
+          echo "=== crypto.zig random ===" >> probe.txt
+          grep -rn "random" "$ZLIB/crypto.zig" >> probe.txt | head -20 || true
+          echo "=== Io.zig random ===" >> probe.txt
+          grep -rn "random" "$ZLIB/Io.zig" | head -30 >> probe.txt || true
+          wc -c probe.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe
+          path: probe.txt
