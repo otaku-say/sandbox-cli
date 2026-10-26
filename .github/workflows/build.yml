@@ -7,12 +7,26 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        tool: [cube-cli, aiod-cli]
-        target: [aarch64-linux-musl, x86_64-linux-musl]
+        include:
+          - tool: cube-cli
+            target: aarch64-linux-musl
+            runner: ubuntu-latest
+          - tool: cube-cli
+            target: x86_64-linux-musl
+            runner: ubuntu-latest
+          - tool: cube-cli
+            target: aarch64-macos
+            runner: macos-14
+          - tool: aiod-cli
+            target: aarch64-linux-musl
+            runner: ubuntu-latest
+          - tool: aiod-cli
+            target: x86_64-linux-musl
+            runner: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -42,6 +56,13 @@ jobs:
           cp "${{ matrix.tool }}/zig-out/bin/${{ matrix.tool }}" \
              "${{ matrix.tool }}-${{ matrix.target }}"
 
+      - name: macOS 临时签名
+        if: steps.probe.outputs.exists == 'true' && contains(matrix.target, 'macos')
+        run: |
+          codesign --force --sign - --timestamp=none "${{ matrix.tool }}-${{ matrix.target }}"
+          codesign --verify "${{ matrix.tool }}-${{ matrix.target }}"
+          codesign -dv "${{ matrix.tool }}-${{ matrix.target }}" 2>&1 | head -5
+
       - uses: actions/upload-artifact@v4
         if: steps.probe.outputs.exists == 'true'
         with:
@@ -50,6 +71,7 @@ jobs:
 
   release:
     needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
