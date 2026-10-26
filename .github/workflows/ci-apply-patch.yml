@@ -1,7 +1,8 @@
 name: ci-apply-patch
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ci/macos-arm64]
 
 jobs:
   apply:
@@ -17,7 +18,7 @@ jobs:
           set -euo pipefail
           git apply --check ci/macos-port.patch
           git apply ci/macos-port.patch
-          git rm -q ci/macos-port.patch .github/workflows/ci-apply-patch.yml
+          git rm -q ci/macos-port.patch .github/workflows/ci-apply-patch.yml ci/trigger
           git config user.name "ci-bot"
           git config user.email "ci-bot@users.noreply.github.com"
           git add -A
