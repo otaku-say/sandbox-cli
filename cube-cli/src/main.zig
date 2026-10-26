@@ -50,13 +50,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const out = &stdout_w.interface;
     defer out.flush() catch {};
 
-    const argv_raw = init.args.vector;
-    if (argv_raw.len < 2) {
+    var arg_storage: [256][]const u8 = undefined;
+    var arg_count: usize = 0;
+    var arg_it = try std.process.Args.Iterator.initAllocator(init.args, gpa);
+    defer arg_it.deinit();
+    while (arg_it.next()) |a| {
+        if (arg_count == arg_storage.len) break;
+        arg_storage[arg_count] = a;
+        arg_count += 1;
+    }
+    const argv: []const []const u8 = arg_storage[0..arg_count];
+    if (argv.len < 2) {
         try help.printTop(out);
         return;
     }
-    const argv = try arena.alloc([]const u8, argv_raw.len);
-    for (argv_raw, 0..) |a, i| argv[i] = std.mem.span(a);
     const cmd = argv[1];
     const args = argv[2..];
 
@@ -270,11 +277,12 @@ fn cmdExec(c: *Ctx, args: []const []const u8) !void {
     } else {
         if (a.pos.len == 2) {
         command = a.pos[1];
-    } else {
+    }
+    else {
         var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
         for (a.pos[1..], 0..) |p, i| {
             if (i > 0) try w.print(" ", .{});
-            // 如果参数内含空格、分号、单双引号或括号，使用 shellQuote 保护
+            // 如果只数兤启空���、分号、单双�号或括号，使用 shellQuote 保护
             if (std.mem.indexOfAny(u8, p, " ;'\"()$|&<>*?~`") != null or std.mem.indexOfScalar(u8, p, '\t') != null) {
                 const q = try util.shellQuote(c.arena, p);
                 try w.print("{s}", .{q});
@@ -307,34 +315,12 @@ fn cmdExec(c: *Ctx, args: []const []const u8) !void {
     if (res.exit_code != 0) try c.out.print("（exit {d}）\n", .{res.exit_code});
 }
 
-/// new 的可选扩展字段（对齐 SDK Sandbox.create 的可选参数）：
+/// new 的可选扩展筗段（对齐 SDK Sandbox.create 的可选参数）：
 ///   --env=K=V（可重复）          → envVars（进程注入）
 ///   --volume=卷名[:挂载路径]      → volumeMounts（路径缺省 /mnt/<卷名>）
 ///   --lifecycle=kill|pause       → lifecycle.onTimeout（pause = 空闲挂起）
 ///   --auto-resume                → lifecycle.autoResume=true（配合 pause）
-///   --no-internet                → allow_internet_access=false（e2b 扁平字段，与 SDK 一致）
-///   --distribution-scope=节点,IP  → distributionScope（限定调度节点）
-fn buildCreateExtras(c: *Ctx, a: util.Args) ![]const u8 {
-    var out: []const u8 = "";
-    const envs = try util.envsJson(c.arena, a.flags);
-    if (envs.len > 0) out = try std.fmt.allocPrint(c.arena, "{s},\"envVars\":{{{s}}}", .{ out, envs });
-    if (a.get("volume")) |v| {
-        const ci = std.mem.indexOfScalar(u8, v, ':');
-        const name = if (ci) |i| v[0..i] else v;
-        const path = if (ci) |i| v[i + 1 ..] else try std.fmt.allocPrint(c.arena, "/mnt/{s}", .{name});
-        out = try std.fmt.allocPrint(
-            c.arena,
-            "{s},\"volumeMounts\":[{{\"name\":\"{s}\",\"path\":\"{s}\"}}]",
-            .{ out, try envd.jsonEscape(c.arena, name), try envd.jsonEscape(c.arena, path) },
-        );
-    }
-    if (a.get("lifecycle")) |lc| {
-        const on: []const u8 = if (std.mem.eql(u8, lc, "pause")) "pause" else "kill";
-        var lcbody: []const u8 = try std.fmt.allocPrint(c.arena, "\"onTimeout\":\"{s}\"", .{on});
-        if (a.has("auto-resume")) lcbody = try std.fmt.allocPrint(c.arena, "{s},\"autoResume\":true", .{lcbody});
-        out = try std.fmt.allocPrint(c.arena, "{s},\"lifecycle\":{{{s}}}", .{ out, lcbody });
-    }
-    if (a.has("no-internet")) out = try std.fmt.allocPrint(c.arena, "{s},\"allow_internet_access\":false", .{out});
+///   --no-internet                → allow_internet_access\":false", .{out});
     if (a.get("distribution-scope")) |sc| {
         var list: []const u8 = "";
         var it = std.mem.tokenizeScalar(u8, sc, ',');
@@ -360,9 +346,7 @@ fn addKV(c: *Ctx, out: []const u8, k: []const u8, v: []const u8, comma: bool) ![
 
 
 /// 组装 metadata：agent（谁开的）/ task（做什么）/ note（显示名）
-/// 缺省取环境变量 CUBESANDBOX_AGENT_NAME，保证任何沙箱都能溯源；admin WebUI 会逐条渲染这些字段。
-fn buildMetadata(c: *Ctx, a: util.Args) ![]const u8 {
-    const agent = a.get("agent") orelse cfg.getenv("CUBESANDBOX_AGENT_NAME") orelse "cube-cli";
+/// 缺省取环境变量 CUBESANDBOX_AGENT_NAME") orelse "cube-cli";
     const task = a.get("task");
     const note = a.get("note") orelse (if (task) |t| try std.fmt.allocPrint(c.arena, "{s} · {s}", .{ agent, t }) else agent);
     var out: []const u8 = "";
