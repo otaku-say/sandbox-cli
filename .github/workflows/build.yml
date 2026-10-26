@@ -5,6 +5,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# 目标矩阵：Cindy 支持的每个平台都要有对应产物
+#   macos-arm64    aarch64-macos        （codesign - 临时签名）
+#   macos-x64      x86_64-macos         （codesign - 临时签名）
+#   win-x64        x86_64-windows-gnu
+#   win-arm64      aarch64-windows-gnu  （无可用 arm64 Windows runner，仅校验编译）
+#   linux-x64      x86_64-linux-musl
+#   linux-arm64    aarch64-linux-musl
+
 jobs:
   build:
     runs-on: ${{ matrix.runner }}
@@ -12,24 +20,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - tool: cube-cli
-            target: aarch64-linux-musl
-            runner: ubuntu-latest
-          - tool: cube-cli
-            target: x86_64-linux-musl
-            runner: ubuntu-latest
-          - tool: cube-cli
-            target: aarch64-macos
-            runner: macos-14
-          - tool: aiod-cli
-            target: aarch64-macos
-            runner: macos-14
-          - tool: aiod-cli
-            target: aarch64-linux-musl
-            runner: ubuntu-latest
-          - tool: aiod-cli
-            target: x86_64-linux-musl
-            runner: ubuntu-latest
+          - { tool: cube-cli, target: aarch64-linux-musl,  runner: ubuntu-24.04-arm }
+          - { tool: cube-cli, target: x86_64-linux-musl,   runner: ubuntu-latest }
+          - { tool: cube-cli, target: aarch64-macos,       runner: macos-14 }
+          - { tool: cube-cli, target: x86_64-macos,        runner: macos-14 }
+          - { tool: cube-cli, target: x86_64-windows-gnu,  runner: ubuntu-latest }
+          - { tool: cube-cli, target: aarch64-windows-gnu, runner: ubuntu-latest }
+          - { tool: aiod-cli, target: aarch64-linux-musl,  runner: ubuntu-24.04-arm }
+          - { tool: aiod-cli, target: x86_64-linux-musl,   runner: ubuntu-latest }
+          - { tool: aiod-cli, target: aarch64-macos,       runner: macos-14 }
+          - { tool: aiod-cli, target: x86_64-macos,        runner: macos-14 }
     steps:
       - uses: actions/checkout@v4
 
@@ -65,25 +65,67 @@ jobs:
 
       - name: 收集产物
         if: steps.probe.outputs.exists == 'true'
+        shell: bash
         run: |
-          cp "${{ matrix.tool }}/zig-out/bin/${{ matrix.tool }}" \
-             "${{ matrix.tool }}-${{ matrix.target }}"
+          set -euo pipefail
+          ext=""
+          case "${{ matrix.target }}" in *windows*) ext=".exe" ;; esac
+          cp "${{ matrix.tool }}/zig-out/bin/${{ matrix.tool }}${ext}" \
+             "${{ matrix.tool }}-${{ matrix.target }}${ext}"
+          ls -l "${{ matrix.tool }}-${{ matrix.target }}${ext}"
 
       - name: macOS 临时签名
         if: steps.probe.outputs.exists == 'true' && contains(matrix.target, 'macos')
         run: |
-          codesign --force --sign - --timestamp=none "${{ matrix.tool }}-${{ matrix.target }}"
-          codesign --verify "${{ matrix.tool }}-${{ matrix.target }}"
-          codesign -dv "${{ matrix.tool }}-${{ matrix.target }}" 2>&1 | head -5
+          f="${{ matrix.tool }}-${{ matrix.target }}"
+          codesign --force --sign - --timestamp=none "$f"
+          codesign --verify "$f"
 
       - uses: actions/upload-artifact@v4
         if: steps.probe.outputs.exists == 'true'
         with:
           name: ${{ matrix.tool }}-${{ matrix.target }}
-          path: ${{ matrix.tool }}-${{ matrix.target }}
+          path: |
+            ${{ matrix.tool }}-${{ matrix.target }}
+            ${{ matrix.tool }}-${{ matrix.target }}.exe
+
+  # 产物必须在对应平台真跑一遍 version，编译通过不等于能运行
+  smoke:
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { artifact: cube-cli-aarch64-linux-musl, runner: ubuntu-24.04-arm }
+          - { artifact: cube-cli-x86_64-linux-musl,  runner: ubuntu-latest }
+          - { artifact: cube-cli-aarch64-macos,      runner: macos-14 }
+          - { artifact: cube-cli-x86_64-macos,       runner: macos-14 }
+          - { artifact: cube-cli-x86_64-windows-gnu, runner: windows-latest }
+          - { artifact: aiod-cli-aarch64-linux-musl, runner: ubuntu-24.04-arm }
+          - { artifact: aiod-cli-x86_64-linux-musl,  runner: ubuntu-latest }
+          - { artifact: aiod-cli-aarch64-macos,      runner: macos-14 }
+          - { artifact: aiod-cli-x86_64-macos,       runner: macos-14 }
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: bin
+
+      - name: 冒烟测试
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            mv "bin/${{ matrix.artifact }}" "bin/${{ matrix.artifact }}.exe"
+            "bin/${{ matrix.artifact }}.exe" version
+          else
+            chmod +x "bin/${{ matrix.artifact }}"
+            "bin/${{ matrix.artifact }}" version
+          fi
 
   release:
-    needs: build
+    needs: [build, smoke]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -94,14 +136,13 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: 仅保留目标文件
+      - name: 生成校验和
         run: |
           cd dist
-          rm -f build.log */build.log
-          find . -maxdepth 1 -name 'err-*' -prune -o -type f -print | xargs -r -n1 basename | head -50
-
-      - name: 生成校验和
-        run: cd dist && ls -la && sha256sum $(find . -maxdepth 1 -type f ! -name 'SHA256SUMS') > SHA256SUMS
+          rm -f build.log
+          ls -la
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:
