@@ -1,0 +1,23 @@
+name: ci-apply-winargs2
+
+on:
+  push:
+    branches: [ci/platform-matrix]
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 修正 span 用法并清理探针文件
+        run: |
+          set -euo pipefail
+          python3 ci/apply_win_args2.py .
+          git rm -q ci/apply_win_args2.py .github/workflows/ci-apply-winargs2.yml .github/workflows/ci-probe-args.yml ci/probe-trigger3
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(cli): 0.17 的 span 不吃 [:0]u16，Windows 分支改用显式切片"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
