@@ -12,6 +12,7 @@
 //!   - å¸§ï¼šé¦–å­—èŠ‚ FIN(1)+opcode(4)ï¼›æ¬¡å­—èŠ‚ MASK(1)+len(7)ï¼Œlen>125 ç”¨ 16/64 ä½æ‰©å±•
 //!   - **å®¢æˆ·ç«¯å‘å‡ºçš„å¸§å¿…é¡»æŽ©ç **ï¼ˆ4 å­—èŠ‚éšæœº keyï¼Œpayload é€å­—èŠ‚å¼‚æˆ–ï¼‰ï¼›æœåŠ¡ç«¯å¸§ä¸æŽ©ç 
 const std = @import("std");
+const builtin = @import("builtin");
 const tls13 = @import("tls13.zig");
 
 pub const OP_TEXT: u8 = 0x1;
@@ -27,18 +28,27 @@ const ws_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// socket fd â‡„ tls13.Stream é€‚é…å™¨ï¼ˆè£¸ syscallï¼›musl é™æ€çŽ¯å¢ƒå¯ç”¨ï¼‰ã€‚
 const FdStream = struct {
-    fd: std.posix.fd_t,
+    fd: if (builtin.os.tag == .windows) std.posix.socket_t else std.posix.fd_t,
 
     fn readFn(ctx: ?*anyopaque, buf: []u8) anyerror!usize {
         const self: *FdStream = @ptrCast(@alignCast(ctx.?));
-        return std.posix.read(self.fd, buf) catch return error.ReadFailed;
+        if (builtin.os.tag == .windows) {
+            return std.posix.recv(self.fd, buf, 0) catch return error.ReadFailed;
+        } else {
+            return std.posix.read(self.fd, buf) catch return error.ReadFailed;
+        }
     }
 
     fn writeFn(ctx: ?*anyopaque, buf: []const u8) anyerror!usize {
         const self: *FdStream = @ptrCast(@alignCast(ctx.?));
-        const n = std.c.write(self.fd, buf.ptr, buf.len);
-        if (n < 0) return error.WriteFailed;
-        return @intCast(n);
+        if (builtin.os.tag == .windows) {
+            const n = std.posix.send(self.fd, buf, 0) catch return error.WriteFailed;
+            return n;
+        } else {
+            const n = std.c.write(self.fd, buf.ptr, buf.len);
+            if (n < 0) return error.WriteFailed;
+            return @intCast(n);
+        }
     }
 };
 
@@ -49,8 +59,11 @@ const Transport = union(enum) {
     fn readSome(t: Transport, buf: []u8) !usize {
         switch (t) {
             .plain => |s| {
-                const fd = s.socket.handle;
-                return std.posix.read(fd, buf);
+                if (builtin.os.tag == .windows) {
+                    return std.posix.recv(s.socket.handle, buf, 0);
+                } else {
+                    return std.posix.read(s.socket.handle, buf);
+                }
             },
             .tls => |c| return c.read(buf),
         }
@@ -174,21 +187,20 @@ pub const Conn = struct {
         } else if (payload.len <= 0xFFFF) {
             hdr[n] = 0x80 | 126;
             n += 1;
-            std.mem.writeInt(u16, hdr[n..][0..2], @intCast(payload.len), .big);
+            std.mem.writeInt(u16, hdr[n..][0..2], .big);
             n += 2;
         } else {
             hdr[n] = 0x80 | 127;
             n += 1;
-            std.mem.writeInt(u64, hdr[n..][0..8], @intCast(payload.len), .big);
+            std.mem.writeInt(u64, hdr[n..][0..8], .big);
             n += 8;
         }
         @memcpy(hdr[n..][0..4], &mask);
         n += 4;
-
-        // payload æŽ©ç åŽå‘é€ï¼ˆå¤´ + æŽ©ç  body ä¸¤æ®µå†™ï¼‰
+        // payload æŽ©ç åŽå‘é€ï¼ˆå¤´ + æŽ©ç  body ä¸¤æ®µå†¥ï¼‰
         const masked_body = try std.heap.smp_allocator.alloc(u8, payload.len);
-        defer std.heap.smp_allocator.free(masked_body);
-        for (payload, 0..) |byte, i| masked_body[i] = byte ^ mask[i % 4];
+        dever std.heap.smp_allocator.free(masked_body);
+        for (payload, 0..) |*byte, i| byte.* ^= mk[i % 4];
 
         try self.transport.writeAll(hdr[0..n]);
         try self.transport.writeAll(masked_body);
@@ -199,132 +211,24 @@ pub const Conn = struct {
     }
 };
 
-/// å‘ socket fd å†™å…¨éƒ¨å­—èŠ‚ï¼ˆ0.17 çš„ Stream æ²¡æœ‰ writeï¼Œç”¨è£¸ syscallï¼‰ã€‚
-fn writeAllFd(fd: std.posix.fd_t, data: []const u8) !void {
+/// å°‘å‘äºŽ builtin.os.tag == .windows æ—¶ æ‰‹å†™ä¸€å¸§ Socket Recv/Send æ–‡ä»¶ç«¯å‡¯ -- gnu/windows åè®®å±‚ â€”â€”
+fn writeAllFd(fd: anytype, data: []const u8) !void {
     var off: usize = 0;
     while (off < data.len) {
-        const n = std.c.write(fd, data.ptr + off, data.len - off);
-        if (n < 0) {
-            if (n == -4) continue; // EINTR: Linux ä¸Ž macOS åŒä¸º 4
-            return error.WriteFailed;
-        }
-        if (n == 0) return error.WriteFailed;
-        off += @intCast(n);
-    }
-}
-
-/// IP å­—é¢é‡ä¼˜å…ˆï¼ˆä¸Žæ—§ç‰ˆè¡Œä¸ºä¸€è‡´ï¼‰ï¼›åŸŸåèµ° std.Io è§£æžï¼ˆå« netfix çš„ hookï¼‰ã€‚
-fn connectTcp(io: std.Io, host: []const u8, port: u16) !std.Io.net.Stream {
-    if (std.Io.net.IpAddress.parse(host, port)) |addr| {
-        return addr.connect(io, .{ .mode = .stream }) catch |e| {
-            std.debug.print("[ws] TCP è¿žæŽ¥ {s}:{d} å¤±è´¥: {t}\n", .{ host, port, e });
-            return e;
-        };
-    } else |_| {}
-    const hn = std.Io.net.HostName.init(host) catch |e| {
-        std.debug.print("[ws] éžæ³•ä¸»æœºå {s}: {t}\n", .{ host, e });
-        return e;
-    };
-    return hn.connect(io, port, .{ .mode = .stream }) catch |e| {
-        std.debug.print("[ws] TCP è¿žæŽ¥ {s}:{d} å¤±è´¥: {t}\n", .{ host, port, e });
-        return e;
-    };
-}
-
-/// å»ºç«‹è¿žæŽ¥å¹¶å®Œæˆæ¡æ‰‹ã€‚
-/// hostï¼šIP å­—é¢é‡æˆ–åŸŸåï¼›opts.tls=true æ—¶å…ˆç» tls13 å®Œæˆ TLS æ¡æ‰‹å†å‘
-/// WebSocket å‡çº§è¯·æ±‚ï¼ˆå³ wss://ï¼‰ã€‚
-pub fn dial(
-    io: std.Io,
-    host: []const u8,
-    port: u16,
-    path: []const u8,
-    host_header: []const u8,
-    opts: DialOptions,
-) !Conn {
-    var stream = try connectTcp(io, host, port);
-    errdefer stream.close(io);
-
-    var fds_box: ?*FdStream = null;
-    var tls_conn: ?*tls13.Conn = null;
-    errdefer {
-        if (tls_conn) |t| tls13.deinit(t);
-        if (fds_box) |f| std.heap.smp_allocator.destroy(f);
-    }
-
-    if (opts.tls) {
-        const f = try std.heap.smp_allocator.create(FdStream);
-        f.* = .{ .fd = stream.socket.handle };
-        fds_box = f;
-        tls_conn = tls13.init(.{
-            .host = host,
-            .port = port,
-            .sni = opts.sni,
-            .stream = .{ .ctx = f, .readFn = FdStream.readFn, .writeFn = FdStream.writeFn },
-            .insecure = opts.insecure,
-        }) catch |e| {
-            std.debug.print("[ws] TLS æ¡æ‰‹å¤±è´¥: {t}\n", .{e});
-            return e;
-        };
-        std.debug.print("[ws] TLS æ¡æ‰‹å®Œæˆï¼ˆ{s}:{d}, insecure={}ï¼‰\n", .{ host, port, opts.insecure });
-    }
-
-    const tport: Transport = if (tls_conn) |t| .{ .tls = t } else .{ .plain = stream };
-
-    // æ¡æ‰‹ key
-    var key_raw: [16]u8 = undefined;
-    io.random(&key_raw);
-    var key_buf: [32]u8 = undefined;
-    const key_b64 = std.base64.standard.Encoder.encode(&key_buf, &key_raw);
-
-    var req_buf: [1024]u8 = undefined;
-    const req = try std.fmt.bufPrint(
-        &req_buf,
-        "GET {s} HTTP/1.1\r\nHost: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n",
-        .{ path, host_header, key_b64 },
-    );
-
-    try tport.writeAll(req);
-
-    // è¯»å“åº”å¤´åˆ° \r\n\r\n
-    var resp: [4096]u8 = undefined;
-    var rlen: usize = 0;
-    var hdr_end: usize = 0;
-    while (rlen < resp.len) {
-        const n = try tport.readSome(resp[rlen..]);
-        if (n == 0) return error.ConnectionClosed;
-        rlen += n;
-        if (std.mem.indexOf(u8, resp[0..rlen], "\r\n\r\n")) |he| {
-            hdr_end = he + 4;
-            break;
+        if (builtin.os.tag == .windows) {
+            const n = try std.posix.send(fd, data[off..], 0);
+            if (n == 0) return error.WriteFailed;
+            off += n;
+        } else {
+            const n = std.c.write(fd, data.ptr + off, data.len - off);
+            if (n < 0) {
+                if (n == -4) continue;
+                return error.WriteFailed;
+            }
+            if (n == 0) return error.WriteFailed;
+            off += @intCast(n);
         }
     }
-    if (hdr_end == 0) return error.HandshakeFailed;
-    const head = resp[0..hdr_end];
-    if (std.mem.indexOf(u8, head, " 101 ") == null) return error.HandshakeFailed;
-
-    // æ ¡éªŒ Sec-WebSocket-Accept
-    var sha: [20]u8 = undefined;
-    var h = std.crypto.hash.Sha1.init(.{});
-    h.update(key_b64);
-    h.update(ws_guid);
-    h.final(&sha);
-    var expect_buf: [32]u8 = undefined;
-    const expect = std.base64.standard.Encoder.encode(&expect_buf, &sha);
-    if (std.mem.indexOf(u8, head, expect) == null) return error.BadAccept;
-
-    var conn: Conn = .{
-        .io = io,
-        .socket = stream,
-        .transport = tport,
-        .fds = fds_box,
-    };
-    // å“åº”å¤´ä¹‹åŽå¯èƒ½å·²å¸¦ä¸Šå¸§æ•°æ®ï¼Œæ¬è¿›è¯»ç¼“å†²
-    const extra_len = rlen - hdr_end;
-    if (extra_len > 0) {
-        @memcpy(conn.rbuf[0..extra_len], resp[hdr_end..rlen]);
-        conn.rlen = extra_len;
-        conn.rpos = 0;
-    }
-    return conn;
 }
+
+/// IP å­—é¢é‡ä¼‰å…ˆìƒ–~–B4ƒ¢ÖÀÍÑ¹%¼ƒ¢žšzC¾ò#–B¬¹•Ñ™¥àƒžj¡½½¯¾ò'Ž)™¸½¹¹•ÑQÀ¡¥¼èÍÑ¹%¼°¡½ÍÐèmu½¹ÍÐÔà°Á½ÉÐèÔÄØ¤€…ÍÑ¹%¼¹¹•Ð¹MÑÉ•…´ì(€€€¥˜€¡ÍÑ¹%¼¹¹•Ð¹%Á‘‘É•ÍÌ¹Á…ÉÍ”¡¡½ÍÐ°Á½ÉÐ¤¤ñ…‘‘Éðì(€€€€€€€É•ÑÕÉ¸…‘‘È¹½¹¹•Ð¡¥¼°€¹ì€¹µ½‘”€ô€¹ÍÑÉ•…´ô¤…Ñ ñ•ðì(€€€€€€€€€€€É•ÑÕÉ¸”ì(€€€€€€€ôì(€€€ô•±Í”ñ}ðíô(€€€½¹ÍÐ¡¸€ôÍÑ¹%¼¹¹•Ð¹!½ÍÑ9…µ”¹¥¹¥Ð¡¡½ÍÐ¤…Ñ ñ•ðì(€€€€€€€É•ÑÕÉ¸”ì(€€€ôì(€€€É•ÑÕÉ¸¡¸¹½¹¹•Ð¡¥¼°Á½ÉÐ°€¹ì€¹µ½‘”€ô€¹ÍÑÉ•…´ô¤…Ñ ñ•ðì(€€€€€€€É•ÑÕÉ¸”ì(€€€ôì)ô((¼¼¼ƒ–îëž®/¢.{š:—–æÛ–º3š"Cš>‡š&/Ž)ÁÕˆ™¸‘¥…° (€€€¥¼èÍÑ¹%¼°(€€€¡½ÍÐèmu½¹ÍÐÔà°(€€€Á½ÉÐèÔÄØ°(€€€Á…Ñ èmu½¹ÍÐÔà°(€€€¡½ÍÑ}¡•…‘•Èèmu½¹ÍÐÔà°(€€€½ÁÑÌè¥…±=ÁÑ¥½¹Ì°(¤€…½¹¸ì(€€€Ù…ÈÍÑÉ•…´€ôÑÉä½¹¹•ÑQÀ¡¥¼°¡½ÍÐ°Á½ÉÐ¤ì(€€€•ÉÉ‘•™•ÈÍÑÉ•…´¹±½Í”¡¥¼¤ì((€€€Ù…È™‘Í}‰½àè€ü©‘MÑÉ•…´€ô¹Õ±°ì(€€€Ù…ÈÑ±Í}½¹¸è€ü©Ñ±ÌÄÌ¹½¹¸€ô¹Õ±°ì(€€€•ÉÉ‘•™•Èì(€€€€€€€¥˜€¡Ñ±Í}½¹¸¤ñÑðÑ±ÌÄÌ¹‘•¥¹¥Ð¡Ð¤ì(€€€€€€€¥˜€¡™‘Í}‰½à¤ñ™ðÍÑ¹¡•…À¹ÍµÁ}…±±½…Ñ½È¹‘•ÍÑÉ½ä¡˜¤ì(€€€ô((€€€¥˜€¡½ÁÑÌ¹Ñ±Ì¤ì(€€€€€€€½¹ÍÐ˜€ôÑÉäÍÑ¹¡•…À¹ÍµÁ}…±±½…Ñ½È¹É•…Ñ”¡‘MÑÉ•…´¤ì(€€€€€€€˜¸¨€ô€¹ì€¹™€ôÍÑÉ•…´¹Í½­•Ð¹¡…¹‘±”ôì(€€€€€€€™‘Í}‰½à€ô˜ì(€€€€€€€Ñ±Í}½¹¸€ôÑÉäÑ±ÌÄÌ¹¥¹¥Ð ¹ì(€€€€€€€€€€€€¹¡½ÍÐ€ô¡½ÍÐ°(€€€€€€€€€€€€¹Á½ÉÐ€ôÁ½ÉÐ°(€€€€€€€€€€€€¹Í¹¤€ô½ÁÑÌ¹Í¹¤°(€€€€€€€€€€€€¹ÍÑÉ•…´€ô€¹ì€¹Ñà€ô˜°€¹É•…‘¸€ô‘MÑÉ•…´¹É•…‘¸°€¹ÝÉ¥Ñ•¸€ô‘MÑÉ•…´¹ÝÉ¥Ñ•¸ô°(€€€€€€€€€€€€¹¥¹Í•ÕÉ”€ô½ÁÑÌ¹¥¹Í•ÕÉ”°(€€€€€€€ô¤ì(€€€ô((€€€½¹ÍÐÑÁ½ÉÐèQÉ…¹ÍÁ½ÉÐ€ô¥˜€¡Ñ±Í}½¹¸¤ñÑð€¹ì€¹Ñ±Ì€ôÐô•±Í”€¹ì€¹Á±…¥¸€ôÍÑÉ•…´ôì((€€€Ù…È­•å}É…ÜèlÄÙuÔà€ôÕ¹‘•™¥¹•ì(€€€¥¼¹É…¹‘½´ ™­•å}É…Ü¤ì(€€€Ù…È­•å}‰Õ˜èlÌÉuÔà€ôÕ¹‘•™¥¹•ì(€€€½¹ÍÐ­•å}ˆØÐ€ôÍÑ¹‰…Í”ØÐ¹ÍÑ…¹‘…É¹¹½‘•È¹•¹½‘” ™­•å}‰Õ˜°€™­•å}É…Ü¤ì((€€€Ù…ÈÉ•Å}‰Õ˜èlÄÀÈÑuÔà€ôÕ¹‘•™¥¹•ì(€€€½¹ÍÐÉ•Ä€ôÑÉäÍÑ¹™µÐ¹‰Õ™AÉ¥¹Ð (€€€€€€€€™É•Å}‰Õ˜°(€€€€€€€€‰PíÍô!QQ@¼Ä¸ÅqÉq¹!½ÍÐèíÍõqÉq¹UÁÉ…‘”èÝ•‰Í½­•ÑqÉq¹½¹¹•Ñ¥½¸èUÁÉ…‘•qÉq¹M•Œµ]•‰M½­•Ðµ-•äèíÍõqÉq¹M•Œµ]•‰M½­•ÐµY•ÉÍ¥½¸è€ÄÍqÉq¹qÉq¸ˆ°(€€€€€€€€¹ìÁ…Ñ °¡½ÍÑ}¡•…‘•È°­•å}ˆØÐô°(€€€€¤ì((€€€ÑÉäÑÁ½ÉÐ¹ÝÉ¥Ñ•±°¡É•Ä¤ì((€€€Ù…ÈÉ•ÍÀèlÐÀäÙuÔà€ôÕ¹‘•™¥¹•ì(€€€Ù…ÈÉ±•¸èÕÍ¥é”€ô€Àì(€€€Ù…È¡‘É}•¹èÕÍ¥é”€ô€Àì(€€€Ý¡¥±”€¡É±•¸€ðÉ•ÍÀ¹±•¸¤ì(€€€€€€€½¹ÍÐ¸€ôÑÉäÑÁ½ÉÐ¹É•…‘M½µ”¡É•ÍÁmÉ±•¸¸¹t¤ì(€€€€€€€¥˜€¡¸€ôô€À¤É•ÑÕÉ¸•ÉÉ½È¹½¹¹•Ñ¥½¹±½Í•ì(€€€€€€€É±•¸€¬ô¸ì(€€€€€€€¥˜€¡ÍÑ¹µ•´¹¥¹‘•á=˜¡Ôà°É•ÍÁlÀ¸¹É±•¹t°€‰qÉq¹qÉq¸ˆ¤¤ñ¡•ðì(€€€€€€€€€€€¡‘É}•¹€ô¡”€¬€Ðì(€€€€€€€€€€€‰É•…¬ì(€€€€€€€ô(€€€ô(€€€¥˜€¡¡‘É}•¹€ôô€À¤É•ÑÕÉ¸•ÉÉ½È¹!…¹‘Í¡…­•…¥±•ì(€€€½¹ÍÐ¡•…€ôÉ•ÍÁlÀ¸¹¡‘É}•¹‘tì(€€€¥˜€¡ÍÑ¹µ•´¹¥¹‘•á=˜¡Ôà°¡•…°€ˆ€ÄÀÄ€ˆ¤€ôô¹Õ±°¤É•ÑÕÉ¸•ÉÉ½È¹!…¹‘Í¡…­•…¥±•ì((€€€Ù…ÈÍ¡„èlÈÁuÔà€ôÕ¹‘•™¥¹•ì(€€€Ù…È €ôÍÑ¹ÉåÁÑ¼¹¡…Í ¹M¡„Ä¹¥¹¥Ð ¹íô¤ì(€€€ ¹ÕÁ‘…Ñ”¡­•å}ˆØÐ¤ì(€€€ ¹ÕÁ‘…Ñ”¡ÝÍ}Õ¥¤ì(€€€ ¹™¥¹…° ™Í¡„¤ì(€€€Ù…È•áÁ•Ñ}‰Õ˜èlÌÉuÔà€ôÕ¹‘•™¥¹•ì(€€€½¹ÍÐ•áÁ•Ð€ôÍÑ¹‰…Í”ØÐ¹ÍÑ…¹‘…É¹¹½‘•È¹•¹½‘” ™•áÁ•Ñ}‰Õ˜°€™Í¡„¤ì(€€€¥˜€¡ÍÑ¹µ•´¹¥¹‘•á=˜¡Ôà°¡•…°•áÁ•Ð¤€ôô¹Õ±°¤É•ÑÕÉ¸•ÉÉ½È¹	…‘•ÁÐì((€€€Ù…È½¹¸è½¹¸€ô€¹ì(€€€€€€€€¹¥¼€ô¥¼°(€€€€€€€€¹Í½­•Ð€ôÍÑÉ•…´°(€€€€€€€€¹ÑÉ…¹ÍÁ½ÉÐ€ôÑÁ½ÉÐ°(€€€€€€€€¹™‘Ì€ô™‘Í}‰½à°(€€€ôì(€€€½¹ÍÐ•áÑÉ…}±•¸€ôÉ±•¸€´¡‘É}•¹ì(€€€¥˜€¡•áÑÉ…}±•¸€ø€À¤ì(€€€€€€€µ•µÁä¡½¹¸¹É‰Õ™lÀ¸¹•áÑÉ…}±•¹t°É•ÍÁm¡‘É}•¹¸¹É±•¹t¤ì(€€€€€€€½¹¸¹É±•¸€ô•áÑÉ…}±•¸ì(€€€€€€€½¹¸¹ÉÁ½Ì€ô€Àì(€€€ô(€€€É•ÑÕÉ¸½¹¸ì)ô
