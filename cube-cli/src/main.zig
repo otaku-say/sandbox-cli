@@ -134,161 +134,248 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     try help.printUnknown(out, cmd);
     exitWith(out, 1);
-    }
+}
 
-    fn eq(a: []const u8, b: []const u8) bool {
+fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-/// æ‰“å°å®Œç«‹å–Ä»¥æŒ‡å®šç é€€å‡ºï¼ˆprocess.exit ä¸è·‘ deferï¼Œæ‰€ä»¥å…ˆ flushï¼‰ã€‚
+/// æ‰“å°å®Œç«‹å³ä»¥æŒ‡å®šç é€€å‡ºï¼ˆprocess.exit ä¸è·‘ deferï¼Œæ‰€ä»¥å…ˆ flushï¼‰ã€‚
 fn exitWith(out: *std.Io.Writer, code: u8) noreturn {
     out.flush() catch {};
     std.process.exit(code);
 }
 
 // health / ls / rm å·²ç§»åˆ°ç‹¬ç«‹æ¨¡å—ï¼ˆcmd_health.zig / cmd_ls.zig / cmd_rm.zigï¼‰ï¼Œ
-// ç”¨æ³•è¯´æ˜è§å„è‡ªçš„ `pub const help;ï&ÛXZ[‹šYÈ:/æzaã9cê¹/çyåfH\Ü]Ú9£©yî¯øà ‚‚™›ˆÛY™]ÊÎˆ
-İ\™ÜÎˆ×XÛÛœİ×XÛÛœİN
-H]›ÚYÂˆÛÛœİHHH][œ\œÙJË˜\™[˜K\™ÜÊNÂˆËÈK][\]H9/&9ab;ï&ù¬¨y§"yb&y£"HK[™YY9bª9  y£${ï"9.#ˆ\XÚÈ9d#9. :`.ú/¤{ï"Bˆ˜\ˆˆ×XÛÛœİNHˆÂˆYˆ
-K™Ù]
-[\]HŠJHÂˆËÈ9ab9§éy§#yb¨yêëùb*ùd#{ï"ÑUİ[\]\ËØ[X\Ù\ËŞùd#_{ï"{ï&ùi,z-)ya£z` 9fç¹§+9g,9c.zacBˆËÈ;ï"9ª(y§oÈQ9aj9ëbHÈ9b*ùd#HÈ[XYÙR[™›È9kd9.,¹e+ù. 9doy.+{ï"{ï&ú`ïy§*¹doy.+yl,yc§ù¨-ù.©9îæy§#yb¨yêëøà ‚ˆYˆ
-ÛYİ[\]Kœ™\ÛÛ™U[\]T™YŠË
-JHYÂˆHYÂˆİ™XYËœš[
-–İ[\]WHÜßH8¡¤ˆÜßWˆ‹ÈYJNÂˆH[ÙHÂˆHÂˆBˆH[ÙHÂˆËÈ:næ:+©K[™YYXÛÙ{ï"Z[ËXÛÙH9¬¦yë¬{ï&¹.#zg :) y­cú)â9fj9¥í¹æ¡9. 9o¢ú`"y¢ê{ï&ÂˆËÈ:g :) y­cú)â9fjù¨c:gh¹¥í¹¦/¹o#ùîæHK[™YYXœ›İÜÙ\Ÿ\ÚİÜ;ï"BˆÛÛœİ™YYHK™Ù]
-›™YYŠHÜ™[ÙH˜ÛÙHÂˆÛÛœİHÛYİ[\]KœXÚĞS™YY
-Ë™YY
-HØ]ÚÂˆHË›İ]œš[
-¹¬¨y§"y®èz-¬ÈK[™YY^ÜßH9æ¡‘PQH9ª(y§o×ˆ‹Û™YYJNÂˆ™]\›ˆ\œ›Ü‹“›İ›İ[™ÂˆNÂˆHšYÂˆİ™XYËœš[
-–İ[\]WHK[™YY^ÜßH8¡¤ˆÜßWˆ‹È™YYšYJNÂˆB‚ˆ˜\ˆ[Y[İ]Ü\ˆ×XÛÛœİNHˆÂˆYˆ
-K™Ù]
-[Y[İ]ŠJHÂˆYˆ
-İ™›]œ\œÙR[
-ML
-JHŸÂˆ[Y[İ]Ü\HHİ™›]˜[ØÔš[
-Ë˜\™[˜K‹[Y[İ]ÙH‹ÛŸJNÂˆH[ÙHßßBˆBˆÛÛœİY]WÜ\HHZ[Y]Y]JËJNÂˆÛÛœİ^˜WÜ\HHZ[Ü™X]Q^˜\ÊËJNÂˆÛÛœİ^[ØYHHİ™›]˜[ØÔš[
-Ë˜\™[˜KŞ×[\]RQ—ÜßWÜß^Üß^Üß__H‹È[Y[İ]Ü\Y]WÜ\^˜WÜ\JNÂ‚ˆÛÛœİYˆHHË˜\™[˜K˜[ØÊN•QŠNÂˆÛÛœİ™\ÈHHË˜ÛÛ›Û
-”ÔÕ‹ÜØ[™›Ş\È‹^[ØYYŠNÂˆÛÛœİÚYH[™™^˜Xİİš[™ÊË˜\™[˜K™\Ë˜›ÙKœØ[™›ŞQŠHÜ™[ÙHÂˆHË›İ]œš[
-ÜßWˆ‹Ü™\Ë˜›Ù_JNÂˆ™]\›ÂˆNÂˆHË›İ]œš[
-ÜßWˆ‹ÜÚYJNÂ‚ˆËÈ9£ä9é.¹ïdyalù.#¹êëùà®{ï"9§éyª(y§oú+é¹ áy¢ïùêëùcèûï#9£ª9¥«HZ[Ù9ïdyalûï"BˆÛÛœİ]Z[Ü]HHİ™›]˜[ØÔš[
-Ë˜\™[˜K‹İ[\]\ËŞÜßH‹İJNÂˆÛÛœİ™\ÈHË˜ÛÛ›Û
-‘ÑU]Z[Ü][YŠHØ]Ú™]\›ÂˆÛÛœİ˜]×ÜÜÈH[™™^˜Xİİš[™ÊË˜\™[˜K™\Ë˜›ÙK˜ÛÛK™^ÜÙYÜÜÈŠHÜ™[ÙH™]\›ÂˆÛÛœİÜÈHÛYİ[\]Kœ\œÙTÜÊË˜\™[˜K˜]×ÜÜÊHØ]Ú™]\›ÂˆÛÛœİİÈHÛYİ[\]K™İY\ÜÑØ]]Ø^JÜËˆŠNÂˆYˆ
-İÈOH
-H™]\›ÂˆÛÛœİ›ŞHHÙ™Ëœ›ŞUT“
+// ç”¨æ³•è¯´æ˜è§å„è‡ªçš„ `pub const help`ï¼›main.zig è¿™é‡Œåªä¿ç•™ dispatch æ¥çº¿ã€‚
 
-HÜ™[ÙH™]\›ÂˆÛÛœİ˜\ÙHHHİ™›]˜[ØÔš[
-Ë˜\™[˜KÜßKÜØ[™›ŞŞÜßH‹Èİ[Ùš[TÛ\Ú
-›ŞJKÚYJNÂˆİ™XYËœš[
-–ÜØ[™›ŞHRSÈ9ïdyalÎˆÜßKŞÙKÈ8¡¤Z[ÙXÛH9æ¡ĞS‘“ÖĞTÑWˆ‹È˜\ÙKİÈJNÂˆİ™XYËœš[
-–ÜØ[™›ŞH[™ˆÜßKÍNNË×ˆ‹Ø˜\Ù_JNÂŸB‚‹ËËÈÛÙHÚYˆ9.èùè K‹‹ˆËK[[ÙOZ[\œÙ\›™[HËK[[™Ï\]ÛŸœß˜\ÚHËK][Y[İ]yéä—HËKY[K‹‹—HËK]\Ù\WB‹ËËÈ[\œ;ï":næ:+©;ï"{ï&¹ëby.íÈ^XÈ]ÛŒÈXÈ‹‹»ï"9.#y/§z-eº)èúaâ¹fj9§#yb¨{ï#9.îù/ezeg9`ãùcëùå*;ï"xà ‚‹ËËÈÙ\›™[;ï&”ÑÈ[—ØÛÙH9æ¡:`&º`dÈ8 %8 %ÔÕ›ŞO‹ÜØ[™›ŞÏÚY‹ÍNNNKÙ^Xİ]{ï"™œÛÛ»ï"xà ‚™›ˆÛYÛÙJÎˆ
-İ\™ÜÎˆ×XÛÛœİ×XÛÛœİN
-H]›ÚYÂˆÛÛœİHHH][œ\œÙJË˜\™[˜K\™ÜÊNÂˆYˆ
-KœÜË›[ˆŠH™]\›ˆ\œ›Ü‹“Z\ÜÚ[™Ğ\™ÎÂˆÛÛœİÚYHKœÜÖÌNÂˆÛÛœİÜ˜ÈHKš›Ú[‘œ›ÛJKˆŠNÂˆÛÛœİ[™ÈHK™Ù]
-›[™ÈŠHÜ™[ÙHœ]ÛˆÂˆÛÛœİ[œ×ÚœÛÛˆHH][™[œÒœÛÛŠË˜\™[˜KK™›YÜÊNÂˆ˜\ˆ[Y[İ]Û\ÎˆMHÂˆYˆ
-K™Ù]
-[Y[İ]ŠJHÂˆYˆ
-İ™›]œ\œÙR[
-ML
-JHŸ[Y[İ]Û\ÈHˆ
-ˆL[ÙHßßBˆB‚ˆYˆ
-K™Ù]
-›[ÙHŠJH_ÂˆYˆ
-][™\JKšÙ\›™[ŠJHÂˆ™]\›ˆÛYÜ›ØËšÙ\›™[[ŠËÚYÜ˜ËK™Ù]
-›[™ÈŠK[œ×ÚœÛÛ‹[Y[İ]Û\ÊNÂˆBˆYˆ
-]][™\JKš[\œŠJHÂˆHË›İ]œš[
-¹.#y¥+ù£ yæ¡9ª(yo#ÎˆÜß{ï"9cëú`"H[\œÈÙ\›™[;ï"Wˆ‹Û_JNÂˆ™]\›ˆ\œ›Ü‹˜Y\™ÎÂˆBˆB‚ˆÛÛœİHHH][œÚ[][İJË˜\™[˜KÜ˜ÊNÂˆÛÛœİÛYHYˆ
-\J[™Ëœ]ÛˆŠHÜˆ\J[™Ëœ]ÛŒÈŠJBˆHİ™›]˜[ØÔš[
-Ë˜\™[˜Kœ]ÛŒÈXÈÜßH‹Ü_JBˆ[ÙHYˆ
-\J[™ËšœÈŠHÜˆ\J[™Ëš˜]˜\ØÜš\ŠHÜˆ\J[™Ë››ÙHŠHÜˆ\J[™Ë››ÙZœÈŠJBˆHİ™›]˜[ØÔš[
-Ë˜\™[˜K››ÙHYHÜßH‹Ü_JBˆ[ÙHYˆ
-\J[™Ë˜˜\ÚŠHÜˆ\J[™ËœÚŠHÜˆ\J[™ËœÚ[ŠJBˆHİ™›]˜[ØÔš[
-Ë˜\™[˜K˜˜\ÚXÈÜßH‹Ü_JBˆ[ÙHÂˆHË›İ]œš[
-¹.#y¥+ù£ yæ¡:+ëz* ˆÜß{ï"9cëú`"H]ÛˆÈœÈÈ˜\Ú;ï"Wˆ‹Û[™ßJNÂˆ™]\›ˆ\œ›Ü‹˜Y[™ÎÂˆNÂˆH[’[”Ø[™›Ş
-ËÚYÛY[Yˆ
-[œ×ÚœÛÛ‹›[ˆˆ
-H[œ×ÚœÛÛˆ[ÙH[[Y[İ]Û\ËK™Ù]
-\Ù\ˆŠJNÂŸB‚‹ËËÈ9g*9¬¦yë¬zaã:-äydoy.é9nm¹¢dùcl9îäù§§;ï":/ç¹£©H[™8¡¤ˆ9¢iú(c8¡¤ˆ:/¤ùaîˆİİ]Üİ\œ‹Ù^];ï"xà ‚™›ˆ[’[”Ø[™›Ş
-Îˆ
-İÚYˆ×XÛÛœİNÛÛ[X[™ˆ×XÛÛœİNİÙˆÖ×XÛÛœİN[œ×ÚœÛÛˆÖ×XÛÛœİN[Y[İ]Û\ÎˆM\Ù\ˆÖ×XÛÛœİN
-H]›ÚYÂˆÛÛœİYˆHHË˜\™[˜K˜[ØÊN•QŠNÂˆÛÛœİÚÙ[ˆHHË˜ÛÛ›™XİÚÙ[ŠÚYYŠNÂˆÛÛœİ[™Ø˜\ÙHHHË™[™˜\ÙJÚY
-NÂˆÛÛœİ™\ÈHH[™™^XÊË˜\™[˜KË˜ÛY[[™Ø˜\ÙKÚÙ[‹\Ù\‹ÛÛ[X[™İÙ[œ×ÚœÛÛ‹[Y[İ]Û\ËYŠNÂˆYˆ
-™\Ëœİİ]›[ˆˆ
-HHË›İ]œš[
-ÜßH‹Ü™\Ëœİİ]JNÂˆYˆ
-™\Ëœİ\œ‹›[ˆˆ
-HHË›İ]œš[
-ÜßH‹Ü™\Ëœİ\œŸJNÂˆYˆ
-™\Ë™^]ØÛÙHOH
-HHË›İ]œš[
-»ï"^]Ù{ï"Wˆ‹Ü™\Ë™^]ØÛÙ_JNÂŸB‚‹ËËÈ^XÈÚYˆ9doy.é‹‹ˆËKXİÙWHËKY[SSQ_ÏU—HËK][Y[İ]yéä—HËK]\Ù\yå*9¢-×B™›ˆÛY^XÊÎˆ
-İ\™ÜÎˆ×XÛÛœİ×XÛÛœİN
-H]›ÚYÂˆÛÛœİHHH][œ\œÙJË˜\™[˜K\™ÜÊNÂˆYˆ
-KœÜË›[ˆŠH™]\›ˆ\œ›Ü‹“Z\ÜÚ[™Ğ\™ÎÂˆÛÛœİÚYHKœÜÖÌNÂˆ˜\ˆÛÛ[X[™ˆ×XÛÛœİNHˆÂ‚ˆËÈ9¥+ù£ y/cyïk¹cà¹¥l9..ˆ‹Hˆ9¥í¹.ã¹¨!ùaáº/¤ùaiz+îùcå¹k£9¥m9doy.é;ï":`oùacyi#y§`¹o%ycíËÒ”ÓÓ¹mc9ieú(ªùi%¹l`ˆÚ[9biyé®ûï"BˆYˆ
-KœÜË›[ˆOHˆ[™İ›Y[K™\[
-NKœÜÖÌWK‹HŠJHÂˆÛÛœİİ[—ØYˆHHË˜\™[˜K˜[ØÊN•QŠNÂˆ˜\ˆ˜YˆÎNL—]NH[™Yš[™YÂˆ˜\ˆˆHİ’[Ë‘š[Kœİ[Š
-Kœ™XY\ŠËš[Ë	œ˜YŠNÂˆ˜\ˆİ[ˆ\Ú^™HHÂˆÚ[H
-İ[İ[—ØY‹›[ŠHÂˆÛÛœİˆH‹š[\™˜XÙKœ™XYÛXÙTÚÜ
-İ[—ØY–İİ[‹—JHØ]Úœ™XZÎÂˆYˆ
-ˆOH
-Hœ™XZÎÂˆİ[
-ÏHÂˆBˆÛÛ[X[™Hİ›Y[Kš[JNİ[—ØY–Ì‹İ[Kˆ——ŠNÂˆH[ÙHÂˆYˆ
-KœÜË›[ˆOHŠHÂˆÛÛ[X[™HKœÜÖÌWNÂˆH[ÙHÂˆ˜\ˆÈHİ’[Ë•Üš]\‹™š^Y
-HË˜\™[˜K˜[ØÊNL
-JNÂˆ›Üˆ
-KœÜÖÌK‹—K‹ŠH_ÂˆYˆ
-Hˆ
-HHËœš[
-ˆ‹ßJNÂˆËÈ9i ¹§§9cà¹¥l9a¡yd*ùên¹¨/8à yb!¹cíøà yceycã9o%ycíù¢%¹¢ë9cíûï#9/oùå*Ú[][İH9/çy¢©ˆYˆ
-İ›Y[Kš[™^Ù[JNˆÉ×Š
-I	Šß˜ŠHOH[Üˆİ›Y[Kš[™^Ù”ØØ[\ŠN	×	ÊHOH[
-HÂˆÛÛœİHHH][œÚ[][İJË˜\™[˜K
-NÂˆHËœš[
-ÜßH‹Ü_JNÂˆH[ÙHÂˆHËœš[
-ÜßH‹ÜJNÂˆBˆBˆÛÛ[X[™HË˜Y™™\™Y
+fn cmdNew(c: *Ctx, args: []const []const u8) !void {
+    const a = try util.parse(c.arena, args);
+    // --template ä¼˜å…ˆï¼›æ²¡æœ‰åˆ™æŒ‰ --need åŠ¨æ€æŒ‘ï¼ˆä¸ tpl-pick åŒä¸€é€»è¾‘ï¼‰
+    var tpl: []const u8 = "";
+    if (a.get("template")) |t| {
+        // å…ˆæŸ¥æœåŠ¡ç«¯åˆ«åï¼ˆGET /templates/aliases/{å}ï¼‰ï¼›å¤±è´¥å†é€€å›æœ¬åœ°åŒ¹é…
+        // ï¼ˆæ¨¡æ¿ ID å…¨ç­‰ / åˆ«å / imageInfo å­ä¸²å”¯ä¸€å‘½ä¸­ï¼‰ï¼›éƒ½æœªå‘½ä¸­å°±åŸæ ·äº¤ç»™æœåŠ¡ç«¯ã€‚
+        if (cmd_template.resolveTemplateRef(c, t)) |id| {
+            tpl = id;
+            std.debug.print("[template] {s} â†’ {s}\n", .{ t, id });
+        } else {
+            tpl = t;
+        }
+    } else {
+        // é»˜è®¤ --need=codeï¼ˆaio-code æ²™ç®±ï¼šä¸éœ€è¦æµè§ˆå™¨æ—¶çš„ä¸€å¾‹é€‰æ‹©ï¼›
+        // éœ€è¦æµè§ˆå™¨/æ¡Œé¢æ—¶æ˜¾å¼ç»™ --need=browser|desktopï¼‰
+        const need = a.get("need") orelse "code";
+        const p = cmd_template.pickByNeed(c, need) catch {
+            try c.out.print("æ²¡æœ‰æ»¡è¶³ --need={s} çš„ READY æ¨¡æ¿\n", .{need});
+            return error.NotFound;
+        };
+        tpl = p.id;
+        std.debug.print("[template] --need={s} â†’ {s}\n", .{ need, p.id });
+    }
 
-NÂˆBˆB‚ˆËÈ9ã«ùh ùcæ:aãù¬ê9ai{ï&‹KY[RÏUˆ9æí9£©yîæy`/;ï&ËKY[SSQH9.ã¹§+9§.¹ã«ùh ú+îùd#9d#ycæ:aãÂˆËÈ;ï"9¥cù¡'ù`/9.#yoáyaî¹ã¬9g*9doy.é:(cÈ:/æùê"ùb%ú(j:aã;ï"BˆÛÛœİ[œ×ÚœÛÛˆHH][™[œÒœÛÛŠË˜\™[˜KK™›YÜÊNÂ‚ˆÛÛœİYˆHHË˜\™[˜K˜[ØÊN•QŠNÂˆÛÛœİÚÙ[ˆHHË˜ÛÛ›™XİÚÙ[ŠÚYYŠNÂˆÛÛœİ[™Ø˜\ÙHHHË™[™˜\ÙJÚY
-NÂ‚ˆËÈ9.#ˆÑÈ9kîzod;ï&¹ï.¹ç y.#z+¯¹¢*¹«h»ï"[Š[Y[İ]S›Û™JH8¡¤ˆ9.#ycäHÛÛ›™XİU[Y[İ]S\ûï"{ï&ÂˆËÈ9¦/¹o#ÈK][Y[İ]yéäˆ9¢cy/g9..ˆ[™9/©ùèk9¢*¹«h¸à ‚ˆ˜\ˆ[Y[İ]Û\ÎˆMHÂˆYˆ
-K™Ù]
-[Y[İ]ŠJHÂˆYˆ
-İ™›]œ\œÙR[
-ML
-JHŸ[Y[İ]Û\ÈHˆ
-ˆL[ÙHßßBˆB‚ˆÛÛœİ™\ÈHH[™™^XÊË˜\™[˜KË˜ÛY[[™Ø˜\ÙKÚÙ[‹K™Ù]
-\Ù\ˆŠKÛÛ[X[™K™Ù]
-˜İÙŠKYˆ
-[œ×ÚœÛÛ‹›[ˆˆ
-H[œ×ÚœÛÛˆ[ÙH[[Y[İ]Û\ËYŠNÂˆYˆ
-™\Ëœİİ]›[ˆˆ
-HHË›İ]œš[
-ÜßH‹Ü™\Ëœİİ]JNÂˆYˆ
-™\Ëœİ\œ‹›[ˆˆ
-HHË›İ]œš[
-ÜßH‹Ü™\Ëœİ\œŸJNÂˆYˆ
-™\Ë™^]ØÛÙHOH
-HHË›İ]œš[
-»ï"^]Ù{ï"Wˆ‹Ü™\Ë™^]ØÛÙ_JNÂŸB‚‹ËËÈ™]È9æ¡9cëú`"y¢jyleykeù«­{ï"9kîzodÑÈØ[™›Ş˜Ü™X]H9æ¡9cëú`"ycà¹¥l;ï"{ï&‚‹ËËÈKY[RÏU»ï"9cëúaãyi#{ï"H8¡¤ˆ[•˜\œûï":/æùê"ù¬ê9ai{ï"B‹ËËÈK]›Û[YOycmùd#VÎ¹£ º/oz-ëùo¡H8¡¤ˆ›Û[YS[İ[ûï":-ëùo¡9ï.¹ç HÛ[Ï9cmùd#O»ï"B‹ËËÈK[Y™XŞXÛOZÚ[]\ÙH8¡¤ˆY™XŞXÛK›Û•[Y[İ];ï"]\ÙHH9ênºeì¹£ º-mûï"B‹ËËÈKX]]Ë\™\İ[YH8¡¤ˆY™XŞXÛK˜]]Ô™\İ[YO]Y{ï":acyd"]\Ù{ï"B‹ËËÈK[›ËZ[\›™]8¡¤ˆ[İ×Ú[\›™]ØXØÙ\Ü×™˜[ÙH‹Ûİ]JNÂˆYˆ
-K™Ù]
-™\İšX][Û‹\ØÛÜHŠJHØßÂˆ˜\ˆ\İˆ×XÛÛœİNHˆÂˆ˜\ˆ]Hİ›Y[KÚÙ[š^™TØØ[\ŠNØË	Ë	ÊNÂˆ˜\ˆˆHYNÂˆÚ[H
-]›™^
+    var timeout_part: []const u8 = "";
+    if (a.get("timeout")) |t| {
+        if (std.fmt.parseInt(i64, t, 10)) |n| {
+            timeout_part = try std.fmt.allocPrint(c.arena, ",\"timeout\":{d}", .{n});
+        } else |_| {}
+    }
+    const meta_part = try buildMetadata(c, a);
+    const extra_part = try buildCreateExtras(c, a);
+    const payload = try std.fmt.allocPrint(c.arena, "{{\"templateID\":\"{s}\"{s}{s}{s}}}", .{ tpl, timeout_part, meta_part, extra_part });
 
-JHÚßÂˆ\İHHİ™›]˜[ØÔš[
-Ë˜\™[˜KÜß^ÜßWÜßWˆ‹È\İYˆ
-ŠHˆˆ[ÙH‹‹H[™šœÛÛ‘\ØØ\JË˜\™[˜KÚÊHJNÂˆˆH˜[ÙNÂˆBˆİ]HHİ™›]˜[ØÔš[
-Ë˜\™[˜KÜßK™\İšX][Û”ØÛÜW–ŞÜßWH‹Èİ]\İJNÂˆBˆYˆ
-K™Ù]
-›XÜŠJHXÜÂˆËÈK[XÜO”ÓÓ»ï&‘Lˆ9ao9k®yæ¡PÔ9§#yb¨zacyïkº`#ù/(9b,ÔÕÜØ[™›Ş\Âˆİ]HHİ™›]˜[ØÔš[
-Ë˜\™[˜KÜßK›XÜÜßH‹Èİ]XÜJNÂˆBˆ™]\›ˆİ]ÂŸB‚‹ËËÈ:/ïyb¨9. 9.*ˆY]Y]H:e+¹`/;ï"ÛÛ[XO]YH9¥í¹bczghº(iz`%ùcíûï"B™›ˆYÕŠÎˆ
-İİ]ˆ×XÛÛœİNÎˆ×XÛÛœİNˆ×XÛÛœİNÛÛ[XNˆ›ÛÛ
-HV×XÛÛœİNÂˆÛÛœİHHH[™šœÛÛ‘\ØØ\JË˜\™[˜KŠNÂˆ™]\›ˆHİ™›]˜[ØÔš[
-Ë˜\™[˜KÜß^ÜßWÜßW—ÜßWˆ‹Èİ]Yˆ
-ÛÛ[XJH‹ˆ[ÙHˆ‹ËHJNÂŸB‚‚‹ËËÈ9îá:(áHY]Y]{ï&˜YÙ[;ï":, yo 9æ¡;ï"KÈ\Úûï"9`f¹.à9.b;ï"KÈ›İ{ï"9¦/¹é.¹d#{ï"B‹ËËÈ9ï.¹ç ycå¹ã«ùh ùcæ:aãÈÕP‘TĞS‘“ÖĞQÑS•ÓSQ{ï#9/çz+ày.îù/ey¬¦yë¬z`ïz ïy®«ù®¤;ï&ØYZ[ˆÙX•RH9/&º`$9§hy®,¹§äú/æy.¦ùkeù«­xà ‚™›ˆZ[Y]Y]JÎˆ
-İNˆ][\™ÜÊHV×XÛÛœİNÂˆÛÛœİYÙ[HK™Ù]
-˜YÙ[ŠHÜ™[ÙHÙ™Ë™Ù][ŠÕP‘TĞS‘“ÖĞQÑS•ÓSQHŠHÜ™[ÙH˜İX™KXÛHÂˆÛÛœİ\ÚÈHK™Ù]
-\ÚÈŠNÂˆÛÛœİ›İHHK™Ù]
-››İHŠHÜ™[ÙH
-Yˆ
-\ÚÊHHİ™›]˜[ØÔš[
-Ë˜\™[˜KÜßH0­ÈÜßH‹ÈYÙ[JH[ÙHYÙ[
-NÂˆ˜\ˆİ]ˆ×XÛÛœİNHˆÂˆYˆ
-\ÚÊHİ]HHYÕŠËİ]\ÚÈ‹˜[ÙJNÂˆİ]HHYÕŠËİ]˜YÙ[‹YÙ[İ]›[ˆˆ
-NÂˆİ]HHYÕŠËİ]››İH‹›İKYJNÂˆİ]HHYÕŠËİ]˜ÛH‹˜İX™KXÛH‹YJNÂˆ™]\›ˆHİ™›]˜[ØÔš[
-Ë˜\™[˜K‹›Y]Y]WŞŞÜß__H‹Ûİ]JNÂŸB
+    const buf = try c.arena.alloc(u8, BUF);
+    const res = try c.control(.POST, "/sandboxes", payload, buf);
+    const sid = envd.extractString(c.arena, res.body, "sandboxID") orelse {
+        try c.out.print("{s}\n", .{res.body});
+        return;
+    };
+    try c.out.print("{s}\n", .{sid});
+
+    // æç¤ºç½‘å…³ä¸ç«¯ç‚¹ï¼ˆæŸ¥æ¨¡æ¿è¯¦æƒ…æ‹¿ç«¯å£ï¼Œæ¨æ–­ aiod ç½‘å…³ï¼‰
+    const detail_path = try std.fmt.allocPrint(c.arena, "/templates/{s}", .{tpl});
+    const dres = c.control(.GET, detail_path, null, buf) catch return;
+    const raw_ports = envd.extractString(c.arena, dres.body, "com.exposed_ports") orelse return;
+    const ports = cmd_template.parsePorts(c.arena, raw_ports) catch return;
+    const gw = cmd_template.guessGateway(ports, "");
+    if (gw == 0) return;
+    const proxy = cfg.proxyURL() orelse return;
+    const base = try std.fmt.allocPrint(c.arena, "{s}/sandbox/{s}", .{ ctxmod.trimSlash(proxy), sid });
+    std.debug.print("[sandbox] AIO ç½‘å…³: {s}/{d}/   â† aiod-cli çš„ SANDBOX_BASE\n", .{ base, gw });
+    std.debug.print("[sandbox] envd    : {s}/49983/\n", .{base});
+}
+
+/// code <sid> <ä»£ç ...> [--mode=interp|kernel] [--lang=python|js|bash] [--timeout=ç§’] [--env=...] [--user=]
+/// interpï¼ˆé»˜è®¤ï¼‰ï¼šç­‰ä»· exec python3 -c ...ï¼ˆä¸ä¾èµ–è§£é‡Šå™¨æœåŠ¡ï¼Œä»»ä½•é•œåƒå¯ç”¨ï¼‰ã€‚
+/// kernelï¼šSDK run_code çš„é€šé“ â€”â€” POST <proxy>/sandbox/<sid>/49999/executeï¼ˆndjsonï¼‰ã€‚
+fn cmdCode(c: *Ctx, args: []const []const u8) !void {
+    const a = try util.parse(c.arena, args);
+    if (a.pos.len < 2) return error.MissingArg;
+    const sid = a.pos[0];
+    const src = a.joinFrom(1, " ");
+    const lang = a.get("lang") orelse "python";
+    const envs_json = try util.envsJson(c.arena, a.flags);
+    var timeout_ms: u64 = 0;
+    if (a.get("timeout")) |t| {
+        if (std.fmt.parseInt(u64, t, 10)) |n| timeout_ms = n * 1000 else |_| {}
+    }
+
+    if (a.get("mode")) |m| {
+        if (util.eq(m, "kernel")) {
+            return cmd_proc.kernelRun(c, sid, src, a.get("lang"), envs_json, timeout_ms);
+        }
+        if (!util.eq(m, "interp")) {
+            try c.out.print("ä¸æ”¯æŒçš„æ¨¡å¼: {s}ï¼ˆå¯é€‰ interp / kernelï¼‰\n", .{m});
+            return error.BadArg;
+        }
+    }
+
+    const q = try util.shellQuote(c.arena, src);
+    const cmd = if (eq(lang, "python") or eq(lang, "python3"))
+        try std.fmt.allocPrint(c.arena, "python3 -c {s}", .{q})
+    else if (eq(lang, "js") or eq(lang, "javascript") or eq(lang, "node") or eq(lang, "nodejs"))
+        try std.fmt.allocPrint(c.arena, "node -e {s}", .{q})
+    else if (eq(lang, "bash") or eq(lang, "sh") or eq(lang, "shell"))
+        try std.fmt.allocPrint(c.arena, "bash -c {s}", .{q})
+    else {
+        try c.out.print("ä¸æ”¯æŒçš„è¯­è¨€: {s}ï¼ˆå¯é€‰ python / js / bashï¼‰\n", .{lang});
+        return error.BadLang;
+    };
+    try runInSandbox(c, sid, cmd, null, if (envs_json.len > 0) envs_json else null, timeout_ms, a.get("user"));
+}
+
+/// åœ¨æ²™ç®±é‡Œè·‘å‘½ä»¤å¹¶æ‰“å°ç»“æœï¼ˆè¿æ¥ envd â†’ æ‰§è¡Œ â†’ è¾“å‡º stdout/stderr/exitï¼‰ã€‚
+fn runInSandbox(c: *Ctx, sid: []const u8, command: []const u8, cwd: ?[]const u8, envs_json: ?[]const u8, timeout_ms: u64, user: ?[]const u8) !void {
+    const buf = try c.arena.alloc(u8, BUF);
+    const token = try c.connectToken(sid, buf);
+    const envd_base = try c.envdBase(sid);
+    const res = try envd.exec(c.arena, c.client, envd_base, token, user, command, cwd, envs_json, timeout_ms, buf);
+    if (res.stdout.len > 0) try c.out.print("{s}", .{res.stdout});
+    if (res.stderr.len > 0) try c.out.print("{s}", .{res.stderr});
+    if (res.exit_code != 0) try c.out.print("ï¼ˆexit {d}ï¼‰\n", .{res.exit_code});
+}
+
+/// exec <sid> <å‘½ä»¤...> [--cwd=] [--env=NAME|K=V] [--timeout=ç§’] [--user=ç”¨æˆ·]
+fn cmdExec(c: *Ctx, args: []const []const u8) !void {
+    const a = try util.parse(c.arena, args);
+    if (a.pos.len < 2) return error.MissingArg;
+    const sid = a.pos[0];
+    var command: []const u8 = "";
+
+    // æ”¯æŒä½ç½®å‚æ•°ä¸º "-" æ—¶ä»æ ‡å‡†è¾“å…¥è¯»å–å®Œæ•´å‘½ä»¤ï¼ˆé¿å…å¤æ‚å¼•å·/JSONåµŒå¥—è¢«å¤–å±‚ shell å‰¥ç¦»ï¼‰
+    if (a.pos.len == 2 and std.mem.eql(u8, a.pos[1], "-")) {
+        const stdin_buf = try c.arena.alloc(u8, BUF);
+        var rbuf: [8192]u8 = undefined;
+        var r = std.Io.File.stdin().reader(c.io, &rbuf);
+        var total: usize = 0;
+        while (total < stdin_buf.len) {
+            const n = r.interface.readSliceShort(stdin_buf[total..]) catch break;
+            if (n == 0) break;
+            total += n;
+        }
+        command = std.mem.trim(u8, stdin_buf[0..total], " \r\n\t");
+    } else {
+        if (a.pos.len == 2) {
+        command = a.pos[1];
+    } else {
+        var w = std.Io.Writer.fixed(try c.arena.alloc(u8, 64 << 10));
+        for (a.pos[1..], 0..) |p, i| {
+            if (i > 0) try w.print(" ", .{});
+            // å¦‚æœå‚æ•°å†…å«ç©ºæ ¼ã€åˆ†å·ã€å•åŒå¼•å·æˆ–æ‹¬å·ï¼Œä½¿ç”¨ shellQuote ä¿æŠ¤
+            if (std.mem.indexOfAny(u8, p, " ;'\"()$|&<>*?~`") != null or std.mem.indexOfScalar(u8, p, '\t') != null) {
+                const q = try util.shellQuote(c.arena, p);
+                try w.print("{s}", .{q});
+            } else {
+                try w.print("{s}", .{p});
+            }
+        }
+        command = w.buffered();
+    }
+    }
+
+    // ç¯å¢ƒå˜é‡æ³¨å…¥ï¼š--env=K=V ç›´æ¥ç»™å€¼ï¼›--env=NAME ä»æœ¬æœºç¯å¢ƒè¯»åŒåå˜é‡
+    // ï¼ˆæ•æ„Ÿå€¼ä¸å¿…å‡ºç°åœ¨å‘½ä»¤è¡Œ / è¿›ç¨‹åˆ—è¡¨é‡Œï¼‰
+    const envs_json = try util.envsJson(c.arena, a.flags);
+
+    const buf = try c.arena.alloc(u8, BUF);
+    const token = try c.connectToken(sid, buf);
+    const envd_base = try c.envdBase(sid);
+
+    // ä¸ SDK å¯¹é½ï¼šç¼ºçœä¸è®¾æˆªæ­¢ï¼ˆrun(timeout=None) â†’ ä¸å‘ Connect-Timeout-Msï¼‰ï¼›
+    // æ˜¾å¼ --timeout=ç§’ æ‰ä½œä¸º envd ä¾§ç¡¬æˆªæ­¢ã€‚
+    var timeout_ms: u64 = 0;
+    if (a.get("timeout")) |t| {
+        if (std.fmt.parseInt(u64, t, 10)) |n| timeout_ms = n * 1000 else |_| {}
+    }
+
+    const res = try envd.exec(c.arena, c.client, envd_base, token, a.get("user"), command, a.get("cwd"), if (envs_json.len > 0) envs_json else null, timeout_ms, buf);
+    if (res.stdout.len > 0) try c.out.print("{s}", .{res.stdout});
+    if (res.stderr.len > 0) try c.out.print("{s}", .{res.stderr});
+    if (res.exit_code != 0) try c.out.print("ï¼ˆexit {d}ï¼‰\n", .{res.exit_code});
+}
+
+/// new çš„å¯é€‰æ‰©å±•å­—æ®µï¼ˆå¯¹é½ SDK Sandbox.create çš„å¯é€‰å‚æ•°ï¼‰ï¼š
+///   --env=K=Vï¼ˆå¯é‡å¤ï¼‰          â†’ envVarsï¼ˆè¿›ç¨‹æ³¨å…¥ï¼‰
+///   --volume=å·å[:æŒ‚è½½è·¯å¾„]      â†’ volumeMountsï¼ˆè·¯å¾„ç¼ºçœ /mnt/<å·å>ï¼‰
+///   --lifecycle=kill|pause       â†’ lifecycle.onTimeoutï¼ˆpause = ç©ºé—²æŒ‚èµ·ï¼‰
+///   --auto-resume                â†’ lifecycle.autoResume=trueï¼ˆé…åˆ pauseï¼‰
+///   --no-internet                â†’ allow_internet_access=falseï¼ˆe2b æ‰å¹³å­—æ®µï¼Œä¸ SDK ä¸€è‡´ï¼‰
+///   --distribution-scope=èŠ‚ç‚¹,IP  â†’ distributionScopeï¼ˆé™å®šè°ƒåº¦èŠ‚ç‚¹ï¼‰
+fn buildCreateExtras(c: *Ctx, a: util.Args) ![]const u8 {
+    var out: []const u8 = "";
+    const envs = try util.envsJson(c.arena, a.flags);
+    if (envs.len > 0) out = try std.fmt.allocPrint(c.arena, "{s},\"envVars\":{{{s}}}", .{ out, envs });
+    if (a.get("volume")) |v| {
+        const ci = std.mem.indexOfScalar(u8, v, ':');
+        const name = if (ci) |i| v[0..i] else v;
+        const path = if (ci) |i| v[i + 1 ..] else try std.fmt.allocPrint(c.arena, "/mnt/{s}", .{name});
+        out = try std.fmt.allocPrint(
+            c.arena,
+            "{s},\"volumeMounts\":[{{\"name\":\"{s}\",\"path\":\"{s}\"}}]",
+            .{ out, try envd.jsonEscape(c.arena, name), try envd.jsonEscape(c.arena, path) },
+        );
+    }
+    if (a.get("lifecycle")) |lc| {
+        const on: []const u8 = if (std.mem.eql(u8, lc, "pause")) "pause" else "kill";
+        var lcbody: []const u8 = try std.fmt.allocPrint(c.arena, "\"onTimeout\":\"{s}\"", .{on});
+        if (a.has("auto-resume")) lcbody = try std.fmt.allocPrint(c.arena, "{s},\"autoResume\":true", .{lcbody});
+        out = try std.fmt.allocPrint(c.arena, "{s},\"lifecycle\":{{{s}}}", .{ out, lcbody });
+    }
+    if (a.has("no-internet")) out = try std.fmt.allocPrint(c.arena, "{s},\"allow_internet_access\":false", .{out});
+    if (a.get("distribution-scope")) |sc| {
+        var list: []const u8 = "";
+        var it = std.mem.tokenizeScalar(u8, sc, ',');
+        var f = true;
+        while (it.next()) |tok| {
+            list = try std.fmt.allocPrint(c.arena, "{s}{s}\"{s}\"", .{ list, if (f) "" else ",", try envd.jsonEscape(c.arena, tok) });
+            f = false;
+        }
+        out = try std.fmt.allocPrint(c.arena, "{s},\"distributionScope\":[{s}]", .{ out, list });
+    }
+    if (a.get("mcp")) |mcp| {
+        // --mcp=<JSON>ï¼šE2B å…¼å®¹çš„ MCP æœåŠ¡é…ç½®é€ä¼ åˆ° POST /sandboxes
+        out = try std.fmt.allocPrint(c.arena, "{s},\"mcp\":{s}", .{ out, mcp });
+    }
+    return out;
+}
+
+/// è¿½åŠ ä¸€ä¸ª metadata é”®å€¼ï¼ˆcomma=true æ—¶å‰é¢è¡¥é€—å·ï¼‰
+fn addKV(c: *Ctx, out: []const u8, k: []const u8, v: []const u8, comma: bool) ![]const u8 {
+    const e = try envd.jsonEscape(c.arena, v);
+    return try std.fmt.allocPrint(c.arena, "{s}{s}\"{s}\":\"{s}\"", .{ out, if (comma) "," else "", k, e });
+}
+
+
+/// ç»„è£… metadataï¼šagentï¼ˆè°å¼€çš„ï¼‰/ taskï¼ˆåšä»€ä¹ˆï¼‰/ noteï¼ˆæ˜¾ç¤ºåï¼‰
+/// ç¼ºçœå–ç¯å¢ƒå˜é‡ CUBESANDBOX_AGENT_NAMEï¼Œä¿è¯ä»»ä½•æ²™ç®±éƒ½èƒ½æº¯æºï¼›admin WebUI ä¼šé€æ¡æ¸²æŸ“è¿™äº›å­—æ®µã€‚
+fn buildMetadata(c: *Ctx, a: util.Args) ![]const u8 {
+    const agent = a.get("agent") orelse cfg.getenv("CUBESANDBOX_AGENT_NAME") orelse "cube-cli";
+    const task = a.get("task");
+    const note = a.get("note") orelse (if (task) |t| try std.fmt.allocPrint(c.arena, "{s} Â· {s}", .{ agent, t }) else agent);
+    var out: []const u8 = "";
+    if (task) |t| out = try addKV(c, out, "task", t, false);
+    out = try addKV(c, out, "agent", agent, out.len > 0);
+    out = try addKV(c, out, "note", note, true);
+    out = try addKV(c, out, "cli", "cube-cli", true);
+    return try std.fmt.allocPrint(c.arena, ",\"metadata\":{{{s}}}", .{out});
+}
