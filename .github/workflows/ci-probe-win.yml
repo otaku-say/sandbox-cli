@@ -1,0 +1,30 @@
+name: ci-probe-win
+
+on:
+  push:
+    branches: [ci/platform-matrix]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: 探测参数与 UTF-16 转换 API
+        run: |
+          ZLIB=$(dirname "$(command -v zig)")/lib/std
+          {
+            echo "zig=$(zig version)"
+            echo "=== process.zig: argsAlloc / Init ==="
+            grep -nE "pub fn argsAlloc|pub fn argsWithAllocator|pub const Init|Minimal" "$ZLIB/process.zig" | head -40
+            echo "=== process.zig: Init 内部 arg 相关 ==="
+            grep -nE "vector|toSlice|utf8|Wtf8|wtf" "$ZLIB/process.zig" | head -40
+            echo "=== unicode.zig: wtf16/utf16 -> utf8 ==="
+            grep -nE "pub fn (wtf16LeToWtf8Alloc|utf16LeToUtf8Alloc|utf16LeToUtf8AllocZ|wtf16LeToWtf8AllocZ)" "$ZLIB/unicode.zig"
+          } > probe.txt
+          cat probe.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-win
+          path: probe.txt
