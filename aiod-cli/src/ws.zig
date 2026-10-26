@@ -27,30 +27,18 @@ const ws_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// socket fd ⇄ tls13.Stream 适配器（裸 syscall；musl 静态环境可用）。
 const FdStream = struct {
-    fd: std.os.linux.fd_t,
+    fd: std.posix.fd_t,
 
     fn readFn(ctx: ?*anyopaque, buf: []u8) anyerror!usize {
         const self: *FdStream = @ptrCast(@alignCast(ctx.?));
-        while (true) {
-            const rc = std.os.linux.read(self.fd, buf.ptr, buf.len);
-            if (std.os.linux.errno(rc) != .SUCCESS) {
-                if (std.os.linux.errno(rc) == .INTR) continue;
-                return error.ReadFailed;
-            }
-            return rc; // 0 = EOF
-        }
+        return std.posix.read(self.fd, buf) catch return error.ReadFailed;
     }
 
     fn writeFn(ctx: ?*anyopaque, buf: []const u8) anyerror!usize {
         const self: *FdStream = @ptrCast(@alignCast(ctx.?));
-        while (true) {
-            const rc = std.os.linux.write(self.fd, buf.ptr, buf.len);
-            if (std.os.linux.errno(rc) != .SUCCESS) {
-                if (std.os.linux.errno(rc) == .INTR) continue;
-                return error.WriteFailed;
-            }
-            return rc;
-        }
+        const n = std.c.write(self.fd, buf.ptr, buf.len);
+        if (n < 0) return error.WriteFailed;
+        return @intCast(n);
     }
 };
 
@@ -212,17 +200,16 @@ pub const Conn = struct {
 };
 
 /// 向 socket fd 写全部字节（0.17 的 Stream 没有 write，用裸 syscall）。
-fn writeAllFd(fd: std.os.linux.fd_t, data: []const u8) !void {
+fn writeAllFd(fd: std.posix.fd_t, data: []const u8) !void {
     var off: usize = 0;
     while (off < data.len) {
-        const rc = std.os.linux.write(fd, data.ptr + off, data.len - off);
-        if (std.os.linux.errno(rc) != .SUCCESS) {
-            if (std.os.linux.errno(rc) == .INTR) continue;
-            std.debug.print("[diag] linux.write errno={d} (off={d} len={d})\n", .{ @intFromEnum(std.os.linux.errno(rc)), off, data.len });
+        const n = std.c.write(fd, data.ptr + off, data.len - off);
+        if (n < 0) {
+            if (n == -4) continue; // EINTR: Linux 与 macOS 同为 4
             return error.WriteFailed;
         }
-        if (rc == 0) return error.WriteFailed;
-        off += rc;
+        if (n == 0) return error.WriteFailed;
+        off += @intCast(n);
     }
 }
 

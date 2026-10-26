@@ -18,6 +18,7 @@
 //! 调试输出默认关闭；`AIO_TLS_DEBUG=1` 打开。证书：默认做主机名校验 +
 //! CertificateVerify 验签；完整链验证暂未实现（失败时给出明确错误）。
 const std = @import("std");
+const builtin = @import("builtin");
 const linux = std.os.linux;
 const mem = std.mem;
 
@@ -401,10 +402,12 @@ fn hex(b: []const u8) void {
 // ============================== ClientHello ==============================
 
 fn randBytes(b: []u8) !void {
-    const rc = linux.getrandom(b.ptr, b.len, 0);
-    if (isErr(rc) or rc != b.len) {
-        std.debug.print("[crypto] getrandom failed errno={d}\n", .{@intFromEnum(linux.errno(rc))});
-        return error.NoEntropy;
+    // 跨平台熵源：Linux 用 getrandom，macOS 用 arc4random_buf。
+    if (builtin.os.tag == .linux) {
+        const rc = linux.getrandom(b.ptr, b.len, 0);
+        if (linux.errno(rc) != .SUCCESS or rc != b.len) return error.NoEntropy;
+    } else {
+        std.c.arc4random_buf(b.ptr, b.len);
     }
 }
 
