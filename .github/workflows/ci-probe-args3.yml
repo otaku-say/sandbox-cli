@@ -1,0 +1,22 @@
+name: ci-probe-args3
+
+on:
+  push:
+    branches: [ci/platform-matrix]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: 打印 process/Args.zig
+        run: |
+          ZLIB=$(dirname "$(command -v zig)")/lib/std
+          cat "$ZLIB/process/Args.zig" > probe.txt
+          cat probe.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-args3
+          path: probe.txt
