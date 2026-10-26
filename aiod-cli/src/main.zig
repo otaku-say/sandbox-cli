@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const argv = try arena.alloc([]const u8, raw.len);
     for (raw, 0..) |a, i| {
         argv[i] = if (comptime builtin.os.tag == .windows)
-            try std.unicode.wtf16LeToWtf8Alloc(arena, std.mem.span(a))
+            try std.unicode.wtf16LeToWtf8Alloc(arena, a[0..std.mem.len(a)])
         else
             std.mem.span(a);
     }
