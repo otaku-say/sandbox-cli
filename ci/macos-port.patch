@@ -1,0 +1,104 @@
+diff --git a/aiod-cli/src/tls13.zig b/aiod-cli/src/tls13.zig
+index 2d28702..a61aac6 100644
+--- a/aiod-cli/src/tls13.zig
++++ b/aiod-cli/src/tls13.zig
+@@ -18,7 +18,6 @@
+ //! 调试输出默认关闭；`AIO_TLS_DEBUG=1` 打开。证书：默认做主机名校验 +
+ //! CertificateVerify 验签；完整链验证暂未实现（失败时给出明确错误）。
+ const std = @import("std");
+-const linux = std.os.linux;
+ const mem = std.mem;
+ 
+ const Sha256 = std.crypto.hash.sha2.Sha256;
+@@ -110,9 +109,7 @@ pub const Stream = struct {
+ 
+ // ============================== raw syscalls ==============================
+ 
+-fn isErr(rc: usize) bool {
+-    return linux.errno(rc) != .SUCCESS;
+-}
++
+ 
+ // ============================== AEAD plumbing ==============================
+ 
+@@ -401,11 +398,8 @@ fn hex(b: []const u8) void {
+ // ============================== ClientHello ==============================
+ 
+ fn randBytes(b: []u8) !void {
+-    const rc = linux.getrandom(b.ptr, b.len, 0);
+-    if (isErr(rc) or rc != b.len) {
+-        std.debug.print("[crypto] getrandom failed errno={d}\n", .{@intFromEnum(linux.errno(rc))});
+-        return error.NoEntropy;
+-    }
++    // 跨平台熵源：Linux 走 getrandom，macOS 走 arc4random（由 std 内部选路）。
++    std.crypto.random.bytes(b);
+ }
+ 
+ const SIG_SCHEMES = [_]u16{
+diff --git a/aiod-cli/src/ws.zig b/aiod-cli/src/ws.zig
+index 15473cb..4483aaf 100644
+--- a/aiod-cli/src/ws.zig
++++ b/aiod-cli/src/ws.zig
+@@ -25,32 +25,18 @@ const ws_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+ 
+ // ---------------- 传输层：plain socket / TLS ----------------
+ 
+-/// socket fd ⇄ tls13.Stream 适配器（裸 syscall；musl 静态环境可用）。
++/// socket fd ⇄ tls13.Stream 适配器（std.posix 封装，Linux / macOS 通用）。
+ const FdStream = struct {
+-    fd: std.os.linux.fd_t,
++    fd: std.posix.fd_t,
+ 
+     fn readFn(ctx: ?*anyopaque, buf: []u8) anyerror!usize {
+         const self: *FdStream = @ptrCast(@alignCast(ctx.?));
+-        while (true) {
+-            const rc = std.os.linux.read(self.fd, buf.ptr, buf.len);
+-            if (std.os.linux.errno(rc) != .SUCCESS) {
+-                if (std.os.linux.errno(rc) == .INTR) continue;
+-                return error.ReadFailed;
+-            }
+-            return rc; // 0 = EOF
+-        }
++        return std.posix.read(self.fd, buf) catch return error.ReadFailed; // 0 = EOF
+     }
+ 
+     fn writeFn(ctx: ?*anyopaque, buf: []const u8) anyerror!usize {
+         const self: *FdStream = @ptrCast(@alignCast(ctx.?));
+-        while (true) {
+-            const rc = std.os.linux.write(self.fd, buf.ptr, buf.len);
+-            if (std.os.linux.errno(rc) != .SUCCESS) {
+-                if (std.os.linux.errno(rc) == .INTR) continue;
+-                return error.WriteFailed;
+-            }
+-            return rc;
+-        }
++        return std.posix.write(self.fd, buf) catch return error.WriteFailed;
+     }
+ };
+ 
+@@ -211,18 +197,16 @@ pub const Conn = struct {
+     }
+ };
+ 
+-/// 向 socket fd 写全部字节（0.17 的 Stream 没有 write，用裸 syscall）。
+-fn writeAllFd(fd: std.os.linux.fd_t, data: []const u8) !void {
++/// 向 socket fd 写全部字节（0.17 的 Stream 没有 write，用 std.posix 封装）。
++fn writeAllFd(fd: std.posix.fd_t, data: []const u8) !void {
+     var off: usize = 0;
+     while (off < data.len) {
+-        const rc = std.os.linux.write(fd, data.ptr + off, data.len - off);
+-        if (std.os.linux.errno(rc) != .SUCCESS) {
+-            if (std.os.linux.errno(rc) == .INTR) continue;
+-            std.debug.print("[diag] linux.write errno={d} (off={d} len={d})\n", .{ @intFromEnum(std.os.linux.errno(rc)), off, data.len });
++        const n = std.posix.write(fd, data[off..]) catch |e| {
++            std.debug.print("[diag] write err: {t} (off={d} len={d})\n", .{ e, off, data.len });
+             return error.WriteFailed;
+-        }
+-        if (rc == 0) return error.WriteFailed;
+-        off += rc;
++        };
++        if (n == 0) return error.WriteFailed;
++        off += n;
+     }
+ }
+ 

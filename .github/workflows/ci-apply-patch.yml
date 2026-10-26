@@ -1,0 +1,25 @@
+name: ci-apply-patch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: 应用 macOS 移植补丁并清理临时文件
+        run: |
+          set -euo pipefail
+          git apply --check ci/macos-port.patch
+          git apply ci/macos-port.patch
+          git rm -q ci/macos-port.patch .github/workflows/ci-apply-patch.yml
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(aiod-cli): 用 std.posix / std.crypto.random 替换 Linux 专用 syscall，支持 macOS 构建"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
