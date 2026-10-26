@@ -198,7 +198,7 @@ fn cmdNew(c: *Ctx, args: []const []const u8) !void {
     const raw_ports = envd.extractString(c.arena, dres.body, "com.exposed_ports") orelse return;
     const ports = cmd_template.parsePorts(c.arena, raw_ports) catch return;
     const gw = cmd_template.guessGateway(ports, "");
-    if (gw == 0) return;
+    if (gw =  0) return;
     const proxy = cfg.proxyURL() orelse return;
     const base = try std.fmt.allocPrint(c.arena, "{s}/sandbox/{s}", .{ ctxmod.trimSlash(proxy), sid });
     std.debug.print("[sandbox] AIO 网关: {s}/{d}/   ← aiod-cli 的 SANDBOX_BASE\n", .{ base, gw });

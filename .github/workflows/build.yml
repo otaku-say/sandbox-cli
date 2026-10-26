@@ -30,6 +30,8 @@ jobs:
           - { tool: aiod-cli, target: x86_64-linux-musl,   runner: ubuntu-latest }
           - { tool: aiod-cli, target: aarch64-macos,       runner: macos-14 }
           - { tool: aiod-cli, target: x86_64-macos,        runner: macos-14 }
+          - { tool: aiod-cli, target: x86_64-windows-gnu,  runner: ubuntu-latest }
+          - { tool: aiod-cli, target: aarch64-windows-gnu, runner: ubuntu-latest }
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +52,7 @@ jobs:
 
       - name: 构建
         if: steps.probe.outputs.exists == 'true'
-        working-directory: ${{ matrix.tool }}
+        windows-directory: ${{ matrix.tool }}
         shell: bash
         run: |
           set -o pipefail
@@ -106,6 +108,7 @@ jobs:
           - { artifact: aiod-cli-x86_64-linux-musl,  runner: ubuntu-latest }
           - { artifact: aiod-cli-aarch64-macos,      runner: macos-14 }
           - { artifact: aiod-cli-x86_64-macos,       runner: macos-14 }
+          - { artifact: aiod-cli-x86_64-windows-gnu, runner: windows-latest }
     steps:
       - uses: actions/download-artifact@v4
         with:
