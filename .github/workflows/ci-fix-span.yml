@@ -1,0 +1,25 @@
+name: ci-fix-span
+
+on:
+  push:
+    branches: [ci/platform-matrix]
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 精确修正 wtf16 处的 span 用法并清理临时文件
+        run: |
+          set -euo pipefail
+          sed -i '/wtf16LeToWtf8Alloc/s/std\.mem\.span(a)/a[0..std.mem.len(a)]/' cube-cli/src/main.zig aiod-cli/src/main.zig
+          grep -n 'wtf16LeToWtf8Alloc' cube-cli/src/main.zig aiod-cli/src/main.zig
+          rm -f .github/workflows/ci-fix-span.yml .github/workflows/ci-apply-winargs2.yml \
+                .github/workflows/ci-probe-args.yml ci/apply_win_args2.py ci/probe-trigger3
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(cli): 0.17 的 span 不吃 [:0]u16，Windows 分支改用显式切片"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
