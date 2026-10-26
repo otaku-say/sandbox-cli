@@ -19,7 +19,6 @@
 //! CertificateVerify éªŒç­¾ï¼›å®Œæ•´é“¾éªŒè¯æš‚æœªå®ç°ï¼ˆå¤±è´¥æ—¶ç»™å‡ºæ˜ç¡®é”™è¯¯ï¼‰ã€‚
 const std = @import("std");
 const builtin = @import("builtin");
-const linux = std.os.linux;
 const mem = std.mem;
 
 const Sha256 = std.crypto.hash.sha2.Sha256;
@@ -84,7 +83,7 @@ fn dg(comptime fmt: []const u8, args: anytype) void {
 // ============================== ä¼ è¾“æŠ½è±¡ ==============================
 
 /// I/O æŠ½è±¡ï¼šç”±è°ƒç”¨æ–¹æä¾›è¯»å†™å®ç°ï¼ˆsocket fd / æµ‹è¯•æ¡© / ä»»æ„ç®¡é“ï¼‰ã€‚
-/// çº¦å®šï¼šread è¿”å› 0 è¡¨ç¤º EOFï¼›write è¿”å›å®é™…å†™å…¥å­—èŠ‚æ•°ï¼ˆå…è®¸éƒ¨åˆ†å†™ï¼‰ã€‚
+//! çº¦å®šï¼šread è¿”å› 0 è¡¨ç¤º EOFï¼›write è¿”å›å®é™…å†™å…¥å­—èŠ‚æ•°ï¼ˆå…è®¸éƒ¨åˆ†å†™ï¼‰ã€‚
 pub const Stream = struct {
     ctx: ?*anyopaque = null,
     readFn: *const fn (ctx: ?*anyopaque, buf: []u8) anyerror!usize,
@@ -109,13 +108,7 @@ pub const Stream = struct {
     }
 };
 
-// ============================== raw syscalls ==============================
-
-fn isErr(rc: usize) bool {
-    return linux.errno(rc) != .SUCCESS;
-}
-
-// ============================== AEAD plumbing ==============================
+// ============================== AEAD plumbing =============================
 
 const TrafficKeys = struct {
     suite: Suite = .none,
@@ -289,8 +282,8 @@ pub const Conn = struct {
             if (payload_len > out.len) return error.RecordTooLarge;
             @memcpy(out[0..payload_len], inner[pay..][0..payload_len]);
             if (real_type == RecType.alert) {
-                if (payload_len >= 2 and out[1] == 0) return error.PeerCloseNotify;
-                std.debug.print("[tls] æœåŠ¡ç«¯ alertï¼šdesc={d}ï¼ˆfatalï¼‰\n", .{ if (payload_len >= 2) out[1] else 0 });
+                if (payload_len >= 2 and out[1] = 0) return error.PeerCloseNotify;
+                std.debug.print("[tls] æœåŠ¡ç«¯ alertï¹¦desc={d}ï¼ˆftalï¼‰\n", .{ if (payload_len >= 2) out[1] else 0 });
                 return error.RemoteAlert;
             }
             if (real_type == RecType.handshake and (out[0] == 4 or out[0] == 24)) {
@@ -306,708 +299,5 @@ pub const Conn = struct {
             var hdr: [5]u8 = undefined;
             hdr[0] = content_type;
             hdr[1] = 0x03;
-            hdr[2] = 0x01; // åˆå§‹ ClientHello çš„ legacy_record_version å¿…é¡»æ˜¯ 0x0301
-            std.mem.writeInt(u16, hdr[3..5], @intCast(payload.len), .big);
-            try c.stream.writeAll(&hdr);
-            try c.stream.writeAll(payload);
-            return;
-        }
-        const inner_len = 1 + payload.len; // TLSInnerPlaintext = [content_type][content][padding]
-        const total = inner_len + 16; // è®°å½•è½½è· = å†…å±‚æ˜æ–‡ + AEAD tag
-        if (total > 16384) return error.RecordTooLarge;
-        var out: [REC_MAX]u8 = undefined;
-        @memset(out[0..], 0);
-        out[0] = 0x17;
-        out[1] = 0x03;
-        out[2] = 0x03;
-        std.mem.writeInt(u16, out[3..5], @intCast(total), .big);
-        @memcpy(out[5..][0..payload.len], payload); // å®æµ‹ï¼šæœåŠ¡ç«¯å†…å±‚å¸ƒå±€æ˜¯ [å†…å®¹][content_type]
-        out[5 + payload.len] = content_type;
-        var tag: [16]u8 = undefined;
-        sealWith(&c.wk, out[5..][0..inner_len], &tag, out[5..][0..inner_len], out[0..5]);
-        @memcpy(out[5 + inner_len ..][0..16], &tag);
-        if (c.wk.debug and total < 200) {
-            std.debug.print("[dbg] seq={d} ", .{c.wk.seq});
-            hex(out[0 .. 5 + total]);
-            std.debug.print("\n", .{});
-        }
-        try c.stream.writeAll(out[0 .. 5 + total]);
-    }
-
-    fn transcriptAppend(c: *Conn, b: []const u8) void {
-        if (c.tlen + b.len > c.transcript.len) return;
-        @memcpy(c.transcript[c.tlen..][0..b.len], b);
-        c.tlen += b.len;
-    }
-    fn transcriptHash(c: *const Conn) [32]u8 {
-        var h: [32]u8 = undefined;
-        Sha256.hash(c.transcript[0..c.tlen], &h, .{});
-        return h;
-    }
-
-    /// å†™æ˜æ–‡æ•°æ®ï¼ˆè‡ªåŠ¨æŒ‰ TLS è®°å½•å±‚åˆ†å¸§ï¼›å•è®°å½•æ˜æ–‡ä¸Šé™ 16367 Bï¼‰ã€‚
-    pub fn write(c: *Conn, data: []const u8) !void {
-        const max_payload = 16384 - 1 - 16; // inner=type(1)+payloadï¼Œè®°å½•è½½è·å†åŠ  AEAD tag(16)
-        var off: usize = 0;
-        while (off < data.len) {
-            const n = @min(data.len - off, max_payload);
-            try c.writeRecord(RecType.application_data, data[off..][0..n]);
-            off += n;
-        }
-    }
-
-    /// è¯»æ˜æ–‡æ•°æ®ï¼ˆå†…éƒ¨è‡ªåŠ¨åšè®°å½•å±‚æ‹†å¸§ï¼‰ã€‚è¿”å› 0 = å¯¹ç«¯å…³é—­ï¼ˆclose_notify / EOFï¼‰ã€‚
-    pub fn read(c: *Conn, buf: []u8) !usize {
-        if (c.rd_pos >= c.rd_len) {
-            c.rd_pos = 0;
-            c.rd_len = 0;
-            const n = c.readAppRecord(c.rd[0..]) catch |e| switch (e) {
-                error.PeerCloseNotify => return 0,
-                else => return e,
-            };
-            if (n == 0) return 0;
-            c.rd_len = n;
-        }
-        const n = @min(buf.len, c.rd_len - c.rd_pos);
-        @memcpy(buf[0..n], c.rd[c.rd_pos..][0..n]);
-        c.rd_pos += n;
-        return n;
-    }
-
-    /// å‘é€ TLS close_notifyï¼ˆbest-effortï¼Œå¤±è´¥å¿½ç•¥ï¼‰ã€‚
-    pub fn closeNotify(c: *Conn) void {
-        if (c.wk.suite == .none) return;
-        c.writeRecord(RecType.alert, &[_]u8{ 1, 0 }) catch {};
-    }
-};
-
-// ============================== key schedule ==============================
-
-const Keys4 = struct { key: [32]u8, iv: [12]u8 };
-
-fn finishedVerify(traffic_secret: [32]u8, th: [32]u8) [32]u8 {
-    const fk = hkdfExpandLabel(HkdfSha256, traffic_secret, "finished", "", 32);
-    var out: [32]u8 = undefined;
-    HmacSha256.create(&out, &th, &fk);
-    return out;
-}
-
-fn hex(b: []const u8) void {
-    const digits = "0123456789abcdef";
-    for (b) |x| {
-        std.debug.print("{c}{c}", .{ digits[x >> 4], digits[x & 0xf] });
-    }
-}
-
-// ============================== ClientHello ==============================
-
-fn randBytes(b: []u8) !void {
-    // è·¨å¹³å°ç†µæºï¼šLinux ç”¨ getrandomï¼ŒmacOS ç”¨ arc4random_bufã€‚
-    if (builtin.os.tag == .linux) {
-        const rc = linux.getrandom(b.ptr, b.len, 0);
-        if (linux.errno(rc) != .SUCCESS or rc != b.len) return error.NoEntropy;
-    } else {
-        std.c.arc4random_buf(b.ptr, b.len);
-    }
-}
-
-const SIG_SCHEMES = [_]u16{
-    0x0403, // ecdsa_secp256r1_sha256
-    0x0503, // ecdsa_secp384r1_sha384
-    0x0603, // ecdsa_secp521r1_sha512
-    0x0804, // rsa_pss_rsae_sha256
-    0x0805, // rsa_pss_rsae_sha384
-    0x0806, // rsa_pss_rsae_sha512
-    0x0401, // rsa_pkcs1_sha256
-    0x0501, // rsa_pkcs1_sha384
-    0x0601, // rsa_pkcs1_sha512
-    0x0807, // ed25519
-    0x0809, // rsa_pss_pss_sha256
-};
-
-fn buildClientHello(out: []u8, sni: ?[]const u8, kp: *const X25519.KeyPair) ![]const u8 {
-    var i: usize = 0;
-    out[i] = Hs.client_hello;
-    i += 1;
-    const len_pos = i;
-    i += 3;
-    const body = i;
-    std.mem.writeInt(u16, out[i..][0..2], 0x0303, .big);
-    i += 2; // legacy_version
-    var rnd: [32]u8 = undefined;
-    try randBytes(&rnd);
-    @memcpy(out[i..][0..32], &rnd);
-    i += 32;
-    out[i] = 0;
-    i += 1; // legacy_session_id
-    std.mem.writeInt(u16, out[i..][0..2], 4, .big);
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 0x1301, .big); // TLS_AES_128_GCM_SHA256
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 0x1303, .big); // TLS_CHACHA20_POLY1305_SHA256
-    i += 2;
-    out[i] = 1;
-    i += 1; // compression_methods
-    out[i] = 0;
-    i += 1;
-    const ext_len_pos = i;
-    i += 2;
-
-    // server_name (0) â€”â€” ä»…å½“æä¾›äº† DNS åï¼ˆIP å­—é¢é‡ä¸å‘ SNIï¼ŒRFC 6066ï¼‰
-    if (sni) |name| {
-        std.mem.writeInt(u16, out[i..][0..2], 0, .big);
-        i += 2;
-        std.mem.writeInt(u16, out[i..][0..2], @intCast(name.len + 5), .big);
-        i += 2;
-        std.mem.writeInt(u16, out[i..][0..2], @intCast(name.len + 3), .big);
-        i += 2;
-        out[i] = 0;
-        i += 1;
-        std.mem.writeInt(u16, out[i..][0..2], @intCast(name.len), .big);
-        i += 2;
-        @memcpy(out[i..][0..name.len], name);
-        i += name.len;
-    }
-
-    // supported_groups (10)
-    std.mem.writeInt(u16, out[i..][0..2], 10, .big);
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 4, .big); // ext_data len = 2 + 2
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 2, .big); // NamedGroup vector é•¿åº¦
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 0x001d, .big); // x25519
-    i += 2;
-
-    // signature_algorithms (13)
-    std.mem.writeInt(u16, out[i..][0..2], 13, .big);
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], @intCast(SIG_SCHEMES.len * 2 + 2), .big);
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], @intCast(SIG_SCHEMES.len * 2), .big); // å‘é‡é•¿åº¦
-    i += 2;
-    for (SIG_SCHEMES) |s| {
-        std.mem.writeInt(u16, out[i..][0..2], s, .big);
-        i += 2;
-    }
-
-    // supported_versions (43)
-    std.mem.writeInt(u16, out[i..][0..2], 43, .big);
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 3, .big);
-    i += 2;
-    out[i] = 2;
-    i += 1;
-    std.mem.writeInt(u16, out[i..][0..2], 0x0304, .big);
-    i += 2;
-
-    // ALPN (16) â€” http/1.1 only
-    std.mem.writeInt(u16, out[i..][0..2], 16, .big);
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 11, .big); // ext_data len = 2 + 1 + 8
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 9, .big); // ProtocolNameList len = 1 + 8
-    i += 2;
-    out[i] = 8;
-    i += 1;
-    out[i] = 'h';
-    i += 1;
-    out[i] = 't';
-    i += 1;
-    out[i] = 't';
-    i += 1;
-    out[i] = 'p';
-    i += 1;
-    out[i] = '/';
-    i += 1;
-    out[i] = '1';
-    i += 1;
-    out[i] = '.';
-    i += 1;
-    out[i] = '1';
-    i += 1;
-
-    // key_share (51) â€” x25519 only
-    std.mem.writeInt(u16, out[i..][0..2], 51, .big);
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 2 + 2 + 2 + 32, .big); // ext_data = åˆ—è¡¨é•¿åº¦ + ç»„ + é•¿åº¦ + key
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 2 + 2 + 32, .big); // KeyShareEntry åˆ—è¡¨é•¿åº¦
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 0x001d, .big);
-    i += 2;
-    std.mem.writeInt(u16, out[i..][0..2], 32, .big);
-    i += 2;
-    @memcpy(out[i..][0..32], &kp.public_key);
-    i += 32;
-
-    std.mem.writeInt(u16, out[ext_len_pos..][0..2], @intCast(i - ext_len_pos - 2), .big);
-    const total = i - body;
-    out[len_pos + 0] = @intCast((total >> 16) & 0xff);
-    out[len_pos + 1] = @intCast((total >> 8) & 0xff);
-    out[len_pos + 2] = @intCast(total & 0xff);
-    return out[0..i];
-}
-
-// ============================== parsers ==============================
-
-const HRR_RANDOM = [_]u8{ 0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91, 0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C };
-
-const ServerHelloInfo = struct {
-    suite: Suite,
-    peer_pub: [32]u8,
-};
-
-fn parseServerHello(msg: []const u8) !ServerHelloInfo {
-    var i: usize = 4; // skip handshake header
-    const version = std.mem.readInt(u16, msg[i..][0..2], .big);
-    i += 2;
-    const random = msg[i..][0..32];
-    i += 32;
-    if (mem.eql(u8, random, &HRR_RANDOM)) return error.HelloRetryRequestUnsupported;
-    const sid_len = msg[i];
-    i += 1 + sid_len;
-    const cs = std.mem.readInt(u16, msg[i..][0..2], .big);
-    i += 2;
-    i += 1; // compression
-    const suite: Suite = switch (cs) {
-        0x1301 => .aes_128_gcm_sha256,
-        0x1303 => .chacha20_poly1305_sha256,
-        else => return error.UnsupportedCipherSuite,
-    };
-    if (msg.len < i + 2) return error.MissingExtensions;
-    const ext_len = std.mem.readInt(u16, msg[i..][0..2], .big);
-    i += 2;
-    const ext_end = i + ext_len;
-    var peer_pub: [32]u8 = undefined;
-    var got_version = false;
-    var got_key = false;
-    while (i + 4 <= ext_end) {
-        const et = std.mem.readInt(u16, msg[i..][0..2], .big);
-        const el = std.mem.readInt(u16, msg[i + 2 ..][0..2], .big);
-        const ev = msg[i + 4 ..][0..el];
-        i += 4 + el;
-        switch (et) {
-            43 => { // supported_versions
-                const sv = std.mem.readInt(u16, ev[0..2], .big);
-                if (sv != 0x0304) return error.TlsVersionNot13;
-                got_version = true;
-            },
-            51 => { // key_share
-                const grp = std.mem.readInt(u16, ev[0..2], .big);
-                const kl = std.mem.readInt(u16, ev[2..4], .big);
-                if (grp != 0x001d or kl != 32) return error.UnsupportedKeyShare;
-                @memcpy(&peer_pub, ev[4..36]);
-                got_key = true;
-            },
-            else => {},
-        }
-    }
-    if (!got_version) return error.MissingSupportedVersion;
-    if (!got_key) return error.MissingKeyShare;
-    _ = version;
-    return .{ .suite = suite, .peer_pub = peer_pub };
-}
-
-const CertEntry = struct { der: []const u8 };
-
-fn parseCertificate(msg: []const u8, out: []CertEntry) ![]CertEntry {
-    var i: usize = 4;
-    const ctx_len = msg[i];
-    i += 1 + ctx_len;
-    const list_len = (@as(usize, msg[i]) << 16) | (@as(usize, msg[i + 1]) << 8) | msg[i + 2];
-    i += 3;
-    const end = i + list_len;
-    var n: usize = 0;
-    while (i < end and n < out.len) {
-        const cl = (@as(usize, msg[i]) << 16) | (@as(usize, msg[i + 1]) << 8) | msg[i + 2];
-        i += 3;
-        out[n] = .{ .der = msg[i .. i + cl] };
-        i += cl;
-        const el = std.mem.readInt(u16, msg[i..][0..2], .big);
-        i += 2 + el;
-        n += 1;
-    }
-    return out[0..n];
-}
-
-/// TLS 1.3 CertificateVerify signature verification (server side).
-fn verifyCertVerify(scheme: u16, pub_key_ctx: Certificate.Parsed, sig: []const u8, msg: []const []const u8) !void {
-    const EcdsaP256 = std.crypto.sign.ecdsa.EcdsaP256Sha256;
-    const EcdsaP384 = std.crypto.sign.ecdsa.EcdsaP384Sha384;
-    switch (scheme) {
-        0x0403 => {
-            const s = try EcdsaP256.Signature.fromDer(sig);
-            const k = try EcdsaP256.PublicKey.fromSec1(pub_key_ctx.pubKey());
-            var v = try s.verifier(k);
-            for (msg) |p| v.update(p);
-            try v.verify();
-        },
-        0x0503 => {
-            const s = try EcdsaP384.Signature.fromDer(sig);
-            const k = try EcdsaP384.PublicKey.fromSec1(pub_key_ctx.pubKey());
-            var v = try s.verifier(k);
-            for (msg) |p| v.update(p);
-            try v.verify();
-        },
-        0x0807 => {
-            const Ed = std.crypto.sign.Ed25519;
-            if (sig.len != Ed.Signature.encoded_length) return error.BadSignatureLength;
-            const k = try Ed.PublicKey.fromBytes(pub_key_ctx.pubKey()[0..Ed.PublicKey.encoded_length].*);
-            const s = Ed.Signature.fromBytes(sig[0..Ed.Signature.encoded_length].*);
-            var v = try s.verifier(k);
-            for (msg) |p| v.update(p);
-            try v.verify();
-        },
-        0x0804, 0x0809 => try rsaVerify(std.crypto.hash.sha2.Sha256, true, pub_key_ctx, sig, msg),
-        0x0805 => try rsaVerify(std.crypto.hash.sha2.Sha384, true, pub_key_ctx, sig, msg),
-        0x0806 => try rsaVerify(std.crypto.hash.sha2.Sha512, true, pub_key_ctx, sig, msg),
-        0x0401 => try rsaVerify(std.crypto.hash.sha2.Sha256, false, pub_key_ctx, sig, msg),
-        0x0501 => try rsaVerify(std.crypto.hash.sha2.Sha384, false, pub_key_ctx, sig, msg),
-        0x0601 => try rsaVerify(std.crypto.hash.sha2.Sha512, false, pub_key_ctx, sig, msg),
-        else => return error.UnsupportedSignatureScheme,
-    }
-}
-
-// ============================== handshake driver ==============================
-
-fn deriveKeyIv(secret: [32]u8, suite: Suite) Keys4 {
-    // æ³¨æ„ï¼šHKDF-Expand-Label çš„ã€Œè¾“å‡ºé•¿åº¦ã€æ˜¯ info çš„ä¸€éƒ¨åˆ†ï¼Œå¿…é¡»æŒ‰ cipher çœŸå® key é•¿åº¦å±•å¼€ï¼Œ
-    // ä¸èƒ½å…ˆå±•å¼€ 32 å†æˆªæ–­ï¼ˆé‚£ä¼šå¾—åˆ°å®Œå…¨ä¸åŒçš„å¯†é’¥ï¼‰ã€‚
-    var key: [32]u8 = @splat(0);
-    switch (keyLenFor(suite)) {
-        16 => {
-            const k = hkdfExpandLabel(HkdfSha256, secret, "key", "", 16);
-            @memcpy(key[0..16], &k);
-        },
-        32 => {
-            const k = hkdfExpandLabel(HkdfSha256, secret, "key", "", 32);
-            @memcpy(key[0..32], &k);
-        },
-        else => unreachable,
-    }
-    const iv = hkdfExpandLabel(HkdfSha256, secret, "iv", "", 12);
-    return .{ .key = key, .iv = iv };
-}
-
-fn hsAppend(c: *Conn, b: []const u8) !void {
-    if (c.hsl + b.len > c.hs.len) return error.HandshakeTooBig;
-    @memcpy(c.hs[c.hsl..][0..b.len], b);
-    c.hsl += b.len;
-}
-
-fn hsNext(c: *Conn) ?[]const u8 {
-    if (c.hsl - c.hsp < 4) return null;
-    const len = (@as(usize, c.hs[c.hsp + 1]) << 16) | (@as(usize, c.hs[c.hsp + 2]) << 8) | @as(usize, c.hs[c.hsp + 3]);
-    if (c.hsl - c.hsp < 4 + len) return null;
-    const msg = c.hs[c.hsp .. c.hsp + 4 + len];
-    c.hsp += 4 + len;
-    return msg;
-}
-
-fn rsaVerify(comptime Hash: type, comptime pss: bool, pk: Certificate.Parsed, sig: []const u8, msg: []const []const u8) !void {
-    const components = try Certificate.rsa.PublicKey.parseDer(pk.pubKey());
-    const modulus_len = components.modulus.len;
-    switch (modulus_len) {
-        inline 128, 256, 384, 512 => |ml| {
-            const key = try Certificate.rsa.PublicKey.fromBytes(components.exponent, components.modulus);
-            if (pss) {
-                const sg = Certificate.rsa.PSSSignature.fromBytes(ml, sig);
-                try Certificate.rsa.PSSSignature.concatVerify(ml, &sg, msg, key, Hash);
-            } else {
-                const sg = Certificate.rsa.PKCS1v1_5Signature.fromBytes(ml, sig);
-                try Certificate.rsa.PKCS1v1_5Signature.concatVerify(ml, &sg, msg, key, Hash);
-            }
-        },
-        else => return error.BadRsaBitCount,
-    }
-}
-
-// ============================== å¯¹å¤– API ==============================
-
-/// å»ºç«‹è¿æ¥æ‰€éœ€çš„å‚æ•°ã€‚
-pub const Options = struct {
-    /// ç›®æ ‡ä¸»æœºï¼ˆSNI ä¸è¯ä¹¦ä¸»æœºåæ ¡éªŒçš„é»˜è®¤å–å€¼ï¼›IP å­—é¢é‡ä¸å‘é€ SNIï¼‰ã€‚
-    host: []const u8,
-    /// ç›®æ ‡ç«¯å£ï¼ˆä»…æ—¥å¿—/ä¿¡æ¯ç”¨é€”ï¼›TCP è¿æ¥ç”±è°ƒç”¨æ–¹å…ˆè¡Œå®Œæˆï¼‰ã€‚
-    port: u16 = 443,
-    /// æ˜¾å¼è¦†ç›– SNI / è¯ä¹¦æ ¡éªŒåï¼ˆé»˜è®¤ = hostï¼‰ã€‚
-    sni: ?[]const u8 = null,
-    /// ä¼ è¾“å±‚è¯»å†™å®ç°ï¼ˆsocket fdã€æµ‹è¯•æ¡©çš†å¯ï¼‰ã€‚
-    stream: Stream,
-    /// true = è·³è¿‡è¯ä¹¦ä¸»æœºåæ ¡éªŒï¼ˆå¯¹åº” aiod-cli çš„ -k/--insecureï¼‰ã€‚
-    insecure: bool = false,
-    /// è¦†ç›–è°ƒè¯•å¼€å…³ï¼›é»˜è®¤è¯»ç¯å¢ƒå˜é‡ AIO_TLS_DEBUGã€‚
-    debug: ?bool = null,
-};
-
-fn isIpLiteral(s: []const u8) bool {
-    if (std.Io.net.IpAddress.parse(s, 0)) |_| {
-        return true;
-    } else |_| {
-        return false;
-    }
-}
-
-/// å»ºç«‹ TLS 1.3 è¿æ¥ï¼šå®Œæˆæ•´ä¸ªæ¡æ‰‹ï¼ˆè¯ä¹¦ä¸»æœºåæ ¡éªŒ + CertificateVerify éªŒç­¾ +
-/// åŒæ–¹ Finishedï¼‰åè¿”å›ã€‚ç”¨åéœ€ `closeNotify()` å† `deinit()`ã€‚
-pub fn init(opts: Options) !*Conn {
-    if (opts.debug) |d| {
-        debug = d;
-    } else if (envDebug()) {
-        debug = true;
-    }
-    const gpa = std.heap.smp_allocator;
-    const c = try gpa.create(Conn);
-    errdefer gpa.destroy(c);
-    c.stream = opts.stream;
-    c.rpos = 0;
-    c.rend = 0;
-    c.hsp = 0;
-    c.hsl = 0;
-    c.tlen = 0;
-    c.rd_len = 0;
-    c.rd_pos = 0;
-    c.rk = .{ .debug = debug };
-    c.wk = .{ .debug = debug };
-    try handshake(c, opts);
-    dg("[tls] æ¡æ‰‹å®Œæˆ suite={s}\n", .{suiteName(c.wk.suite)});
-    return c;
-}
-
-/// é‡Šæ”¾è¿æ¥ï¼ˆä¸å…³é—­åº•å±‚ä¼ è¾“ï¼›socket ç”±è°ƒç”¨æ–¹è‡ªè¡Œå…³é—­ï¼‰ã€‚
-pub fn deinit(c: *Conn) void {
-    std.heap.smp_allocator.destroy(c);
-}
-
-fn handshake(c: *Conn, opts: Options) !void {
-    const verify_name: []const u8 = opts.sni orelse opts.host;
-    const sni_send: ?[]const u8 = opts.sni orelse (if (isIpLiteral(opts.host)) null else opts.host);
-    dg("[tls] è¿æ¥ {s}:{d}  sni={s}  insecure={}\n", .{ opts.host, opts.port, sni_send orelse "-", opts.insecure });
-
-    // --- X25519 keypairï¼ˆgetrandom æ’­ç§ï¼‰---
-    var seed: [32]u8 = undefined;
-    try randBytes(&seed);
-    const kp = X25519.KeyPair.generateDeterministic(seed);
-
-    var ch_buf: [1024]u8 = undefined;
-    const ch = try buildClientHello(&ch_buf, sni_send, &kp);
-    c.transcriptAppend(ch);
-    try c.writeRecord(RecType.handshake, ch);
-    dg("[tls] -> ClientHello ({d} bytes, x25519 key_share)\n", .{ch.len});
-
-    // --- æ˜æ–‡ flightï¼šè¯»åˆ° ServerHello ---
-    var suite: Suite = .none;
-    var peer_pub: [32]u8 = undefined;
-    while (true) {
-        const rec = try c.readRecordRaw();
-        const payload = c.rbuf[c.rpos .. c.rpos + rec.len];
-        c.rpos += rec.len;
-        if (rec.t == RecType.change_cipher_spec) {
-            dg("[tls] <- change_cipher_specï¼ˆå…¼å®¹æ¨¡å¼ï¼Œå¿½ç•¥ï¼‰\n", .{});
-            continue;
-        }
-        if (rec.t == RecType.alert) {
-            const desc: u8 = if (payload.len >= 2) payload[1] else 0;
-            std.debug.print("[tls] æ¡æ‰‹å¤±è´¥ï¼šæœåŠ¡ç«¯æ˜æ–‡ alert desc={d}\n", .{desc});
-            return error.ServerAlert;
-        }
-        if (rec.t != RecType.handshake) return error.UnexpectedRecordType;
-        try hsAppend(c, payload);
-        while (hsNext(c)) |msg| {
-            if (msg[0] != Hs.server_hello) return error.ExpectedServerHello;
-            const info = try parseServerHello(msg);
-            suite = info.suite;
-            peer_pub = info.peer_pub;
-            c.transcriptAppend(msg);
-            dg("[tls] <- ServerHello suite={s} version=0x0304\n", .{suiteName(suite)});
-            break;
-        }
-        break;
-    }
-
-    // --- key scheduleï¼ˆTLS 1.3, SHA-256ï¼‰---
-    const ecdhe = try X25519.scalarmult(kp.secret_key, peer_pub);
-    const zero32 = @as([32]u8, @splat(0));
-    const eh = emptyHash(Sha256);
-    const early_secret = HkdfSha256.extract(&zero32, &zero32);
-    const d1 = hkdfExpandLabel(HkdfSha256, early_secret, "derived", &eh, 32);
-    const handshake_secret = HkdfSha256.extract(&d1, &ecdhe);
-    const sh_th = c.transcriptHash();
-    const c_hs = hkdfExpandLabel(HkdfSha256, handshake_secret, "c hs traffic", &sh_th, 32);
-    const s_hs = hkdfExpandLabel(HkdfSha256, handshake_secret, "s hs traffic", &sh_th, 32);
-    const ck = deriveKeyIv(c_hs, suite);
-    const sk = deriveKeyIv(s_hs, suite);
-    c.rk = .{ .suite = suite, .key = sk.key, .iv = sk.iv, .debug = debug };
-    c.wk = .{ .suite = suite, .key = ck.key, .iv = ck.iv, .debug = debug };
-    dg("[tls] ECDHE å®Œæˆï¼Œhandshake traffic keys å°±ç»ª\n", .{});
-
-    // --- åŠ å¯† flightï¼šEE / Certificate / CertificateVerify / Finished ---
-    var certs: [16]CertEntry = undefined;
-    var n_certs: usize = 0;
-    var leaf: Certificate.Parsed = undefined;
-    var got_ee = false;
-    var got_cert = false;
-    var got_cv = false;
-    var got_fin = false;
-    var flight: [16384]u8 = undefined;
-    const cv_ctx = "TLS 1.3, server CertificateVerify";
-
-    while (!got_fin) {
-        const n = try c.readAppRecord(&flight);
-        if (n == 0) continue;
-        try hsAppend(c, flight[0..n]);
-        while (hsNext(c)) |msg| {
-            switch (msg[0]) {
-                Hs.encrypted_extensions => {
-                    c.transcriptAppend(msg);
-                    got_ee = true;
-                    dg("[tls] <- EncryptedExtensions ({d} B)\n", .{msg.len - 4});
-                },
-                Hs.certificate => {
-                    n_certs = (parseCertificate(msg, &certs) catch return error.CertParseFailed).len;
-                    if (n_certs == 0) return error.EmptyCertificateChain;
-                    leaf = try Certificate.parse(.{ .buffer = certs[0].der, .index = 0 });
-                    c.transcriptAppend(msg);
-                    got_cert = true;
-                    dg("[tls] <- Certificate: {d} å¼ , å¶å­ {d} B, pubkey={s}\n", .{ n_certs, certs[0].der.len, @tagName(leaf.pub_key_algo) });
-                    if (!opts.insecure) {
-                        leaf.verifyHostName(verify_name) catch |e| {
-                            std.debug.print("[tls] è¯ä¹¦ä¸»æœºåæ ¡éªŒå¤±è´¥ï¼š{s} ä¸åŒ¹é…ï¼ˆ{t}ï¼‰\n", .{ verify_name, e });
-                            return error.CertificateHostMismatch;
-                        };
-                        dg("[cert] OKï¼šè¯ä¹¦åŒ¹é… {s}\n", .{verify_name});
-                    } else {
-                        dg("[cert] è·³è¿‡ä¸»æœºåæ ¡éªŒï¼ˆinsecureï¼‰\n", .{});
-                    }
-                },
-                Hs.certificate_verify => {
-                    const th = c.transcriptHash();
-                    const scheme = std.mem.readInt(u16, msg[4..6], .big);
-                    const sig_len: usize = std.mem.readInt(u16, msg[6..8], .big);
-                    if (8 + sig_len > msg.len) return error.BadCertVerify;
-                    const sig = msg[8 .. 8 + sig_len];
-                    const spaces = @as([64]u8, @splat(0x20));
-                    const zero = [_]u8{0};
-                    const parts = [_][]const u8{ &spaces, cv_ctx, &zero, &th };
-                    verifyCertVerify(scheme, leaf, sig, &parts) catch |e| {
-                        std.debug.print("[tls] CertificateVerify éªŒç­¾å¤±è´¥ scheme=0x{x:0>4}: {t}\n", .{ scheme, e });
-                        return e;
-                    };
-                    c.transcriptAppend(msg);
-                    got_cv = true;
-                    dg("[cert] OKï¼šCertificateVerify éªŒç­¾é€šè¿‡ï¼ˆscheme=0x{x:0>4}ï¼‰\n", .{scheme});
-                },
-                Hs.finished => {
-                    const th = c.transcriptHash();
-                    const expect = finishedVerify(s_hs, th);
-                    if (!std.crypto.timing_safe.eql([32]u8, expect, msg[4..36].*)) {
-                        std.debug.print("[tls] æœåŠ¡ç«¯ Finished verify_data æ ¡éªŒå¤±è´¥\n", .{});
-                        return error.BadFinished;
-                    }
-                    c.transcriptAppend(msg);
-                    got_fin = true;
-                    dg("[tls] <- Finished OKï¼ˆæœåŠ¡ç«¯ verify_data åŒ¹é…ï¼‰\n", .{});
-                },
-                else => dg("[tls] ï¼ˆå¿½ç•¥æ¡æ‰‹æ¶ˆæ¯ type={d}, {d} Bï¼‰\n", .{ msg[0], msg.len }),
-            }
-        }
-    }
-    if (!got_ee or !got_cert or !got_cv) {
-        std.debug.print("[tls] æœåŠ¡ç«¯ flight ä¸å®Œæ•´ï¼šee={} cert={} cv={}\n", .{ got_ee, got_cert, got_cv });
-        return error.IncompleteFlight;
-    }
-
-    // --- åº”ç”¨å¯†é’¥ + å®¢æˆ·ç«¯ Finished ---
-    const d2 = hkdfExpandLabel(HkdfSha256, handshake_secret, "derived", &eh, 32);
-    const master_secret = HkdfSha256.extract(&d2, &zero32);
-    const fin_th = c.transcriptHash();
-    const c_ap = hkdfExpandLabel(HkdfSha256, master_secret, "c ap traffic", &fin_th, 32);
-    const s_ap = hkdfExpandLabel(HkdfSha256, master_secret, "s ap traffic", &fin_th, 32);
-    try c.stream.writeAll(&[_]u8{ 0x14, 0x03, 0x03, 0x00, 0x01, 0x01 }); // å…¼å®¹æ¨¡å¼ CCS
-    const client_finished = finishedVerify(c_hs, fin_th);
-    var fin_msg: [36]u8 = undefined; // Finished æ¡æ‰‹æ¶ˆæ¯å¿…é¡»å¸¦ 4 å­—èŠ‚å¤´
-    fin_msg[0] = Hs.finished;
-    fin_msg[1] = 0;
-    fin_msg[2] = 0;
-    fin_msg[3] = 32;
-    @memcpy(fin_msg[4..36], &client_finished);
-    try c.writeRecord(RecType.handshake, &fin_msg);
-    const cka = deriveKeyIv(c_ap, suite);
-    const ska = deriveKeyIv(s_ap, suite);
-    c.wk = .{ .suite = suite, .key = cka.key, .iv = cka.iv, .debug = debug };
-    c.rk = .{ .suite = suite, .key = ska.key, .iv = ska.iv, .debug = debug };
-    dg("[tls] -> Finished OKï¼ˆå®¢æˆ·ç«¯ï¼‰\n", .{});
-}
-
-// ============================== å•å…ƒæµ‹è¯•ï¼ˆæµ‹è¯•æ¡© Streamï¼‰ ==============================
-
-const MemStream = struct {
-    data: [64 * 1024]u8 = undefined,
-    len: usize = 0,
-
-    fn readFn(ctx: ?*anyopaque, buf: []u8) anyerror!usize {
-        _ = ctx;
-        _ = buf;
-        return 0; // æœ¬æ¡©åªç”¨äºå†™è·¯å¾„å¯¹æ‹ï¼šè¯»æ–¹å‘ç›´æ¥ EOFã€‚
-    }
-
-    fn writeFn(ctx: ?*anyopaque, buf: []const u8) anyerror!usize {
-        const self: *MemStream = @ptrCast(@alignCast(ctx.?));
-        if (self.len + buf.len > self.data.len) return error.NoSpaceLeft;
-        @memcpy(self.data[self.len..][0..buf.len], buf);
-        self.len += buf.len;
-        return buf.len;
-    }
-};
-
-test "isIpLiteral" {
-    try std.testing.expect(isIpLiteral("127.0.0.1"));
-    try std.testing.expect(isIpLiteral("::1"));
-    try std.testing.expect(!isIpLiteral("example.com"));
-}
-
-test "é•¿å†™å…¥æŒ‰è®°å½•å±‚åˆ†å¸§ï¼Œå¯ç”¨åŒä¸€å¥—å¯†é’¥å›è§£" {
-    const gpa = std.testing.allocator;
-    const c = try gpa.create(Conn);
-    defer gpa.destroy(c);
-
-    var stub: MemStream = .{};
-    const key: [32]u8 = @splat(0xAB);
-    const iv: [12]u8 = @splat(0x11);
-    c.* = Conn{
-        .stream = .{ .ctx = &stub, .readFn = MemStream.readFn, .writeFn = MemStream.writeFn },
-        .rk = .{ .suite = .aes_128_gcm_sha256, .key = key, .iv = iv },
-        .wk = .{ .suite = .aes_128_gcm_sha256, .key = key, .iv = iv },
-    };
-
-    var payload: [40000]u8 = undefined;
-    for (&payload, 0..) |*b, i| b.* = @truncate(i);
-    try c.write(&payload);
-
-    var check: TrafficKeys = .{ .suite = .aes_128_gcm_sha256, .key = key, .iv = iv };
-    var off: usize = 0;
-    var plain: [REC_MAX]u8 = undefined;
-    var total: usize = 0;
-    var records: usize = 0;
-    while (off < stub.len) {
-        try std.testing.expect(stub.len - off >= 5);
-        try std.testing.expectEqual(RecType.application_data, stub.data[off]);
-        const len = std.mem.readInt(u16, stub.data[off + 3 ..][0..2], .big);
-        const enc = stub.data[off + 5 .. off + 5 + len];
-        var tag: [16]u8 = undefined;
-        @memcpy(&tag, enc[enc.len - 16 ..]);
-        const body = enc[0 .. enc.len - 16];
-        try openWith(&check, plain[0..body.len], body, tag, stub.data[off .. off + 5]);
-        // æœ¬å®ç°å¯¹ã€Œå‘å‡ºã€è®°å½•çš„å†…å±‚å¸ƒå±€ = [å†…å®¹][content_type]
-        try std.testing.expectEqual(RecType.application_data, plain[body.len - 1]);
-        for (0..body.len - 1) |i| {
-            try std.testing.expectEqual(payload[total + i], plain[i]);
-        }
-        total += body.len - 1;
-        off += 5 + len;
-        records += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 40000), total);
-    try std.testing.expectEqual(@as(usize, 3), records); // 16367 + 16367 + 7266
-}
+            hdr[2] = 0x01; // å¢w–,±¥•¹Ñ!•±±¼ƒj±•…å}É•½É‘}Ù•ÉÍ¥½¸ƒ–ş¦†ïšb¼€ÁàÀÌÀÄ(€€€€€€€€€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°¡‘ÉlÌ¸¸Õt°¥¹Ñ…ÍĞ¡Á…å±½…¹±•¸¤°€¹‰¥œ¤ì(€€€€€€€€€€€ÑÉäŒ¹ÍÑÉ•…´¹İÉ¥Ñ•±° ™¡‘È¤ì(€€€€€€€€€€€ÑÉäŒ¹ÍÑÉ•…´¹İÉ¥Ñ•±°¡Á…å±½…¤ì(€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€ô(€€€€€€€½¹ÍĞ¥¹¹•É}±•¸€ô€Ä€¬Á…å±½…¹±•¸ì€¼¼Q1M%¹¹•ÉA±…¥¹Ñ•áĞ€ôm½¹Ñ•¹Ñ}ÑåÁ•um½¹Ñ•¹ÑumÁ…‘‘¥¹t(€€€€€€€½¹ÍĞÑ½Ñ…°€ô¥¹¹•É}±•¸€¬€ÄØì€¼¼ƒ¢ºÃ–öW¢ö÷¢6Ü€ôƒ––Æšb;šZ€¬Ñ…œ(€€€€€€€¥˜€¡Ñ½Ñ…°€ø€ÄØÌàĞ¤É•ÑÕÉ¸•ÉÉ½È¹I•½É‘Q½½1…É”ì(€€€€€€€Ù…È½ÕĞèmI}5auÔà€ôÕ¹‘•™¥¹•ì(€€€€€€€µ•µÍ•Ğ¡½ÕÑlÀ¸¹t°€À¤ì(€€€€€€€½ÕÑlÁt€ô€ÁàÄÜì(€€€€€€€½ÕÑlÅt€ô€ÁàÀÌì(€€€€€€€½ÕÑlÉt€ô€ÁàÀÌì(€€€€€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑlÌ¸¸Õt°¥¹Ñ…ÍĞ¡Ñ½Ñ…°¤°€¹‰¥œ¤ì(€€€€€€€µ•µÁä¡½ÕÑlÔ¸¹ulÀ¸¹Á…å±½…¹±•¹t°Á…å±½…¤ì€¼¼ƒ–º{šÖ/¾òkšr7–*‡®¿––Æ–â–Æšb¼o––ºåum½¹Ñ•¹Ñ}ÑåÁ•t(€€€€€€€½ÕÑlÔ€¬Á…å±½…¹±•¹t€ô½¹Ñ•¹Ñ}ÑåÁ”ì(€€€€€€€Ù…ÈÑ…œèlÄÙuÔà€ôÕ¹‘•™¥¹•ì(€€€€€€€Í•…±]¥Ñ  ™Œ¹İ¬°½ÕÑlÔ¸¹ulÀ¸¹¥¹¹•É}±•¹t°€™Ñ…œ°½ÕÑlÔ¸¹ulÀ¸¹¥¹¹•É}±•¹t°½ÕÑlÀ¸¸Õt¤ì(€€€€€€€µ•µÁä¡½ÕÑlÔ€¬¥¹¹•É}±•¸€¸¹ulÀ¸¸ÄÙt°€™Ñ…œ¤ì(€€€€€€€¥˜€¡Œ¹İ¬¹‘•‰Õœ…¹Ñ½Ñ…°€ğ€ÈÀÀ¤ì(€€€€€€€€€€€ÍÑ¹‘•‰Õœ¹ÁÉ¥¹Ğ ‰m‘‰tÍ•Äõí‘ô€ˆ°€¹íŒ¹İ¬¹Í•Åô¤ì(€€€€€€€€€€€¡•à¡½ÕÑlÀ€¸¸€Ô€¬Ñ½Ñ…±t¤ì(€€€€€€€€€€€ÍÑ¹‘•‰Õœ¹ÁÉ¥¹Ğ ‰q¸ˆ°€¹íô¤ì(€€€€€€€ô(€€€€€€€ÑÉäŒ¹ÍÑÉ•…´¹İÉ¥Ñ•±°¡½ÕÑlÀ€¸¸€Ô€¬Ñ½Ñ…±t¤ì(€€€ô((€€€™¸ÑÉ…¹ÍÉ¥ÁÑÁÁ•¹¡Œè€©½¹¸°ˆèmu½¹ÍĞÔà¤Ù½¥ì(€€€€€€€¥˜€¡Œ¹Ñ±•¸€¬ˆ¹±•¸€øŒ¹ÑÉ…¹ÍÉ¥ÁĞ¹±•¸¤É•ÑÕÉ¸ì(€€€€€€€µ•µÁä¡Œ¹ÑÉ…¹ÍÉ¥ÁÑmŒ¹Ñ±•¸¸¹ulÀ¸¹ˆ¹±•¹t°ˆ¤ì(€€€€€€€Œ¹Ñ±•¸€¬ôˆ¹±•¸ì(€€€ô(€€€™¸ÑÉ…¹ÍÉ¥ÁÑ!…Í ¡Œè€©½¹ÍĞ½¹¸¤lÌÉuÔàì(€€€€€€€Ù…È èlÌÉuÔà€ôÕ¹‘•™¥¹•ì(€€€€€€€M¡„ÈÔØ¹¡…Í ¡Œ¹ÑÉ…¹ÍÉ¥ÁÑlÀ¸¹Œ¹Ñ±•¹t°€™ °€¹íô¤ì(€€€€€€€É•ÑÕÉ¸ ì(€€€ô((€€€€¼¼¼ƒ–gšb;šZšVÃš6»¾ò#¢«–*£š2$Q1Lƒ¢ºÃ–öW–Æ–"–âŸ¾òo–6W¢ºÃ–öWšb;šZ’â+¦f@€ÄØÌØÜ¾ò'(€€€ÁÕˆ™¸İÉ¥Ñ”¡Œè€©½¹¸°‘…Ñ„èmu½¹ÍĞÔà¤€…Ù½¥ì(€€€€€€€½¹ÍĞµ…á}Á…å±½…€ô€ÄØÌàĞ€´€Ä€´€ÄØì€¼¼¥¹¹•ÈõÑåÁ” Ä¤­Á…å±½…“¾ò3¢ºÃ–öW¢ö÷¢6ß–7–*€Ñ…œ ÄØ¤(€€€€€€€Ù…È½™˜èÕÍ¥é”€ô€Àì(€€€€€€€İ¡¥±”€¡½™˜€ğ‘…Ñ„¹±•¸¤ì(€€€€€€€€€€€½¹ÍĞ¸€ôµ¥¸¡‘…Ñ„¹±•¸€´½™˜°µ…á}Á…å±½…¤ì(€€€€€€€€€€€ÑÉäŒ¹İÉ¥Ñ•I•½É¡I•QåÁ”¹…ÁÁ±¥…Ñ¥½¹}‘…Ñ„°‘…Ñ…m½™˜¸¹ulÀ¸¹¹t¤ì(€€€€€€€€€€€½™˜€¬ô¸ì(€€€€€€€ô(€€€ô((€€€€¼¼¼ƒ¢¾ïšb;šZšVÃš6»¾ò#–¦£¢«–*£–k¢ºÃ–öW–Æš.–âŸ¾ò'¢şS–nx€À€ôƒ–¾ç®¿–Ï¦^·¾ò!±½Í•}¹½Ñ¥™ä€¼=¾ò'(€€€ÁÕˆ™¸É•…¡Œè€©½¹¸°‰Õ˜èmuÔà¤€…ÕÍ¥é”ì(€€€€€€€¥˜€¡Œ¹É‘}Á½Ì€øôŒ¹É‘}±•¸¤ì(€€€€€€€€€€€Œ¹É‘}Á½Ì€ô€Àì(€€€€€€€€€€€Œ¹É‘}±•¸€ô€Àì(€€€€€€€€€€€½¹ÍĞ¸€ôŒ¹É•…‘ÁÁI•½É¡Œ¹É‘lÀ¸¹t¤…Ñ ñ•ğÍİ¥Ñ €¡”¤ì(€€€€€€€€€€€€€€€•ÉÉ½È¹A••É±½Í•9½Ñ¥™ä€ôøÉ•ÑÕÉ¸€À°(€€€€€€€€€€€€€€€•±Í”€ôøÉ•ÑÕÉ¸”°(€€€€€€€€€€€ôì(€€€€€€€€€€€¥˜€¡¸€ôô€À¤É•ÑÕÉ¸€Àì(€€€€€€€€€€€Œ¹É‘}±•¸€ô¸ì(€€€€€€€ô(€€€€€€€½¹ÍĞ¸€ôµ¥¸¡‰Õ˜¹±•¸°Œ¹É‘}±•¸€´Œ¹É‘}Á½Ì¤ì(€€€€€€€µ•µÁä¡‰Õ™lÀ¸¹¹t°Œ¹É‘mŒ¹É‘}Á½Ì¸¹ulÀ¸¹¹t¤ì(€€€€€€€Œ¹É‘}Á½Ì€¬ô¸ì(€€€€€€€É•ÑÕÉ¸¸ì(€€€ô((€€€€¼¼¼ƒ–>G¦Q1L±½Í•}¹½Ñ¥™ç¾ò!‰•ÍĞµ•™™½ÉÓ¾ò3–’Ç¢Ò—–ş÷V—¾ò'(€€€ÁÕˆ™¸±½Í•9½Ñ¥™ä¡Œè€©½¹¸¤Ù½¥ì(€€€€€€€¥˜€¡Œ¹İ¬¹ÍÕ¥Ñ”€ôô€¹¹½¹”¤É•ÑÕÉ¸ì(€€€€€€€Œ¹İÉ¥Ñ•I•½É¡I•QåÁ”¹…±•ÉĞ°€™m}uÔáì€Ä°€Àô¤…Ñ íôì(€€€ô)ôì((¼¼€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôô­•äÍ¡•‘Õ±”€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôô()½¹ÍĞ-•åÌĞ€ôÍÑÉÕĞì­•äèlÌÉuÔà°¥ØèlÄÉuÔàôì()™¸™¥¹¥Í¡•‘Y•É¥™ä¡ÑÉ…™™¥}Í•É•ĞèlÌÉuÔà°Ñ èlÌÉuÔà¤lÌÉuÔàì(€€€½¹ÍĞ™¬€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°ÑÉ…™™¥}Í•É•Ğ°€‰™¥¹¥Í¡•ˆ°€ˆˆ°€ÌÈ¤ì(€€€Ù…È½ÕĞèlÌÉuÔà€ôÕ¹‘•™¥¹•ì(€€€!µ…M¡„ÈÔØ¹É•…Ñ” ™½ÕĞ°€™Ñ °€™™¬¤ì(€€€É•ÑÕÉ¸½ÕĞì)ô()™¸¡•à¡ˆèmu½¹ÍĞÔà¤Ù½¥ì(€€€½¹ÍĞ‘¥¥ÑÌ€ô€ˆÀÄÈÌĞÔØÜàå…‰‘•˜ˆì(€€€™½È€¡ˆ¤ñáğì(€€€€€€€ÍÑ¹‘•‰Õœ¹ÁÉ¥¹Ğ ‰íõíôˆ°€¹ì‘¥¥ÑÍmà€øø€Ñt°‘¥¥ÑÍmà€˜€Áá™tô¤ì(€€€ô)ô((¼¼€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôô±¥•¹Ñ!•±±¼€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôô()™¸É…¹‘	åÑ•Ì¡ˆèmuÔà¤€…Ù½¥ì(€€€ÍÑ¹ÉåÁÑ¼¹É…¹‘½´¹‰åÑ•Ì¡ˆ¤ì)ô()½¹ÍĞM%}M!5L€ôm}uÔÄÙì(€€€€ÁàÀĞÀÌ°€¼¼•‘Í…}Í•ÀÈÔÙÈÅ}Í¡„ÈÔØ(€€€€ÁàÀÔÀÌ°€¼¼•‘Í…}Í•ÀÌàÑÈÅ}Í¡„ÌàĞ(€€€€ÁàÀØÀÌ°€¼¼•‘Í…}Í•ÀÔÈÅÈÅ}Í¡„ÔÄÈ(€€€€ÁàÀàÀĞ°€¼¼ÉÍ…}ÁÍÍ}ÉÍ…•}Í¡„ÈÔØ(€€€€ÁàÀàÀÔ°€¼¼ÉÍ…}ÁÍÍ}ÉÍ…•}Í¡„ÌàĞ(€€€€ÁàÀàÀØ°€¼¼ÉÍ…}ÁÍÍ}ÉÍ…•}Í¡„ÔÄÈ(€€€€ÁàÀĞÀÄ°€¼¼ÉÍ…}Á­ÌÅ}Í¡„ÈÔØ(€€€€ÁàÀÔÀÄ°€¼¼ÉÍ…}Á­ÌÅ}Í¡„ÌàĞ(€€€€ÁàÀØÀÄ°€¼¼ÉÍ…}Á­ÌÅ}Í¡„ÔÄÈ(€€€€ÁàÀàÀÜ°€¼¼•ÈÔÔÄä(€€€€ÁàÀàÀä°€¼¼ÉÍ…}ÁÍÍ}ÁÍÍ}Í¡„ÈÔØ)ôì()™¸‰Õ¥±‘±¥•¹Ñ!•±±¼¡½ÕĞèmuÔà°Í¹¤è€ımu½¹ÍĞÔà°­Àè€©½¹ÍĞ`ÈÔÔÄä¹-•åA…¥È¤€…mu½¹ÍĞÔàì(€€€Ù…È¤èÕÍ¥é”€ô€Àì(€€€½ÕÑm¥t€ô!Ì¹±¥•¹Ñ}¡•±±¼ì(€€€¤€¬ô€Äì(€€€½¹ÍĞ±•¹}Á½Ì€ô¤ì(€€€¤€¬ô€Ìì(€€€½¹ÍĞ‰½‘ä€ô¤ì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÁàÀÌÀÌ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì€¼¼±•…å}Ù•ÉÍ¥½¸(€€€Ù…ÈÉ¹èlÌÉuÔà€ôÕ¹‘•™¥¹•ì(€€€ÑÉäÉ…¹‘	åÑ•Ì ™É¹¤ì(€€€µ•µÁä¡½ÕÑm¤¸¹ulÀ¸¸ÌÉt°€™É¹¤ì(€€€¤€¬ô€ÌÈì(€€€½ÕÑm¥t€ô€Àì(€€€¤€¬ô€Äì€¼¼±•…å}Í•ÍÍ¥½¹}¥(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€Ğ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÁàÄÌÀÄ°€¹‰¥œ¤ì€¼¼Q1M}M|ÄÈá}5}M!ÈÔØ(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÁàÄÌÀÌ°€¹‰¥œ¤ì€¼¼Q1M}!!ÈÁ}A=1dÄÌÀÕ}M!ÈÔØ(€€€¤€¬ô€Èì(€€€½ÕÑm¥t€ô€Äì(€€€¤€¬ô€Äì€¼¼½µÁÉ•ÍÍ¥½¹}µ•Ñ¡½‘Ì(€€€½ÕÑm¥t€ô€Àì(€€€¤€¬ô€Äì(€€€½¹ÍĞ•áÑ}±•¹}Á½Ì€ô¤ì(€€€¤€¬ô€Èì((€€€€¼¼Í•ÉÙ•É}¹…µ”€ À¤ƒŠSŠPƒ’î–öOš>C’úo’ê9Lƒ–B7¾ò!%@ƒ–¶_¦v‹¦?’â7–>DM9'¾ò1I€ØÀØÛ¾ò$(€€€¥˜€¡Í¹¤¤ñ¹…µ•ğì(€€€€€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€À°€¹‰¥œ¤ì(€€€€€€€¤€¬ô€Èì(€€€€€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°¥¹Ñ…ÍĞ¡¹…µ”¹±•¸€¬€Ô¤°€¹‰¥œ¤ì(€€€€€€€¤€¬ô€Èì(€€€€€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°¥¹Ñ…ÍĞ¡¹…µ”¹±•¸€¬€Ì¤°€¹‰¥œ¤ì(€€€€€€€¤€¬ô€Èì(€€€€€€€½ÕÑm¥t€ô€Àì(€€€€€€€¤€¬ô€Äì(€€€€€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°¥¹Ñ…ÍĞ¡¹…µ”¹±•¸¤°€¹‰¥œ¤ì(€€€€€€€¤€¬ô€Èì(€€€€€€€µ•µÁä¡½ÕÑm¤¸¹ulÀ¸¹¹…µ”¹±•¹t°¹…µ”¤ì(€€€€€€€¤€¬ô¹…µ”¹±•¸ì(€€€ô((€€€€¼¼ÍÕÁÁ½ÉÑ•‘}É½ÕÁÌ€ ÄÀ¤(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÄÀ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€Ğ°€¹‰¥œ¤ì€¼¼•áÑ}‘…Ñ„±•¸€ô€È€¬€È(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€È°€¹‰¥œ¤ì€¼¼9…µ•‘É½ÕÀÙ•Ñ½Èƒ¦Vÿ–ê˜(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÁàÀÀÅ°€¹‰¥œ¤ì€¼¼àÈÔÔÄä(€€€¤€¬ô€Èì((€€€€¼¼Í¥¹…ÑÕÉ•}…±½É¥Ñ¡µÌ€ ÄÌ¤(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÄÌ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°¥¹Ñ…ÍĞ¡M%}M!5L¹±•¸€¨€È€¬€È¤°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°¥¹Ñ…ÍĞ¡M%}M!5L¹±•¸€¨€È¤°€¹‰¥œ¤ì€¼¼ƒ–BG¦?¦Vÿ–ê˜(€€€¤€¬ô€Èì(€€€™½È€¡M%}M!5L¤ñÍğì(€€€€€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°Ì°€¹‰¥œ¤ì(€€€€€€€¤€¬ô€Èì(€€€ô((€€€€¼¼ÍÕÁÁ½ÉÑ•‘}Ù•ÉÍ¥½¹Ì€ ĞÌ¤(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ĞÌ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€Ì°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€½ÕÑm¥t€ô€Èì(€€€¤€¬ô€Äì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÁàÀÌÀĞ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì((€€€€¼¼1A8€ ÄØ¤ƒŠP¡ÑÑÀ¼Ä¸Ä½¹±ä(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÄØ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÄÄ°€¹‰¥œ¤ì€¼¼•áÑ}‘…Ñ„±•¸€ô€È€¬€Ä€¬€à(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ä°€¹‰¥œ¤ì€¼¼AÉ½Ñ½½±9…µ•1¥ÍĞ±•¸€ô€Ä€¬€à(€€€¤€¬ô€Èì(€€€½ÕÑm¥t€ô€àì(€€€¤€¬ô€Äì(€€€½ÕÑm¥t€ô€ œì(€€€¤€¬ô€Äì(€€€½ÕÑm¥t€ô€Ğœì(€€€¤€¬ô€Äì(€€€½ÕÑm¥t€ô€Ğœì(€€€¤€¬ô€Äì(€€€½ÕÑm¥t€ô€Àœì(€€€¤€¬ô€Äì(€€€½ÕÑm¥t€ô€œ¼œì(€€€¤€¬ô€Äì(€€€½ÕÑm¥t€ô€œÄœì(€€€¤€¬ô€Äì(€€€½ÕÑm¥t€ô€œ¸œì(€€€¤€¬ô€Äì(€€€½ÕÑm¥t€ô€œÄœì(€€€¤€¬ô€Äì((€€€€¼¼­•å}Í¡…É”€ ÔÄ¤ƒŠPàÈÔÔÄä½¹±ä(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÔÄ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€È€¬€È€¬€È€¬€ÌÈ°€¹‰¥œ¤ì€¼¼•áÑ}‘…Ñ„€ôƒ–"_¢†£¦Vÿ–ê˜€¬ƒî€¬ƒ¦Vÿ–ê˜€¬­•ä(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€È€¬€È€¬€ÌÈ°€¹‰¥œ¤ì€¼¼-•åM¡…É•¹ÑÉäƒ–"_¢†£¦Vÿ–ê˜(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÁàÀÀÅ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm¤¸¹ulÀ¸¸Ét°€ÌÈ°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€µ•µÁä¡½ÕÑm¤¸¹ulÀ¸¸ÌÉt°€™­À¹ÁÕ‰±¥}­•ä¤ì(€€€¤€¬ô€ÌÈì((€€€ÍÑ¹µ•´¹İÉ¥Ñ•%¹Ğ¡ÔÄØ°½ÕÑm•áÑ}±•¹}Á½Ì¸¹ulÀ¸¸Ét°¥¹Ñ…ÍĞ¡¤€´•áÑ}±•¹}Á½Ì€´€È¤°€¹‰¥œ¤ì(€€€½¹ÍĞÑ½Ñ…°€ô¤€´‰½‘äì(€€€½ÕÑm±•¹}Á½Ì€¬€Át€ô¥¹Ñ…ÍĞ ¡Ñ½Ñ…°€øø€ÄØ¤€˜€Áá™˜¤ì(€€€½ÕÑm±•¹}Á½Ì€¬€Åt€ô¥¹Ñ…ÍĞ ¡Ñ½Ñ…°€øø€à¤€˜€Áá™˜¤ì(€€€½ÕÑm±•¹}Á½Ì€¬€Ét€ô¥¹Ñ…ÍĞ¡Ñ½Ñ…°€˜€Áá™˜¤ì(€€€É•ÑÕÉ¸½ÕÑlÀ¸¹¥tì)ô((¼¼€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôôÁ…ÉÍ•ÉÌ€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôô()½¹ÍĞ!II}I9=4€ôm}uÔáì€Áá°€ÁàÈÄ°€Áñ°€ÁàÜĞ°€ÁáÔ°€Áàå°€ÁàØÄ°€ÁàÄÄ°€Áá	°€ÁàÅ°€Áàá°€ÁàÀÈ°€ÁàÅ°€ÁàØÔ°€Ááà°€ÁàäÄ°€ÁáÈ°€ÁáÈ°€ÁàÄÄ°€ÁàÄØ°€Áàİ°€Áá	°€Áàá°€ÁàÕ°€ÁàÀÜ°€Áàå°€ÁàÀä°€ÁáÈ°€Ááà°€Ááà°€ÁàÌÌ°€Áàåôì()½¹ÍĞM•ÉÙ•É!•±±½%¹™¼€ôÍÑÉÕĞì(€€€ÍÕ¥Ñ”èMÕ¥Ñ”°(€€€Á••É}ÁÕˆèlÌÉuÔà°)ôì()™¸Á…ÉÍ•M•ÉÙ•É!•±±¼¡µÍœèmu½¹ÍĞÔà¤€…M•ÉÙ•É!•±±½%¹™¼ì(€€€Ù…È¤èÕÍ¥é”€ô€Ğì€¼¼Í­¥À¡…¹‘Í¡…­”¡•…‘•È(€€€½¹ÍĞÙ•ÉÍ¥½¸€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°µÍm¤¸¹ulÀ¸¸Ét°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€½¹ÍĞÉ…¹‘½´€ôµÍm¤¸¹ulÀ¸¸ÌÉtì(€€€¤€¬ô€ÌÈì(€€€¥˜€¡µ•´¹•Å°¡Ôà°É…¹‘½´°€™!II}I9=4¤¤É•ÑÕÉ¸•ÉÉ½È¹!•±±½I•ÑÉåI•ÅÕ•ÍÑU¹ÍÕÁÁ½ÉÑ•ì(€€€½¹ÍĞÍ¥‘}±•¸€ôµÍm¥tì(€€€¤€¬ô€Ä€¬Í¥‘}±•¸ì(€€€½¹ÍĞÌ€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°µÍm¤¸¹ulÀ¸¸Ét°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€¤€¬ô€Äì€¼¼½µÁÉ•ÍÍ¥½¸(€€€½¹ÍĞÍÕ¥Ñ”èMÕ¥Ñ”€ôÍİ¥Ñ €¡Ì¤ì(€€€€€€€€ÁàÄÌÀÄ€ôø€¹…•Í|ÄÈá}µ}Í¡„ÈÔØ°(€€€€€€€€ÁàÄÌÀÌ€ôø€¹¡…¡„ÈÁ}Á½±äÄÌÀÕ}Í¡„ÈÔØ°(€€€€€€€•±Í”€ôøÉ•ÑÕÉ¸•ÉÉ½È¹U¹ÍÕÁÁ½ÉÑ•‘¥Á¡•ÉMÕ¥Ñ”°(€€€ôì(€€€¥˜€¡µÍœ¹±•¸€ğ¤€¬€È¤É•ÑÕÉ¸•ÉÉ½È¹5¥ÍÍ¥¹áÑ•¹Í¥½¹Ìì(€€€½¹ÍĞ•áÑ}±•¸€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°µÍm¤¸¹ulÀ¸¸Ét°€¹‰¥œ¤ì(€€€¤€¬ô€Èì(€€€½¹ÍĞ•áÑ}•¹€ô¤€¬•áÑ}±•¸ì(€€€Ù…ÈÁ••É}ÁÕˆèlÌÉuÔà€ôÕ¹‘•™¥¹•ì(€€€Ù…È½Ñ}Ù•ÉÍ¥½¸€ô™…±Í”ì(€€€Ù…È½Ñ}­•ä€ô™…±Í”ì(€€€İ¡¥±”€¡¤€¬€Ğ€ğô•áÑ}•¹¤ì(€€€€€€€½¹ÍĞ•Ğ€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°µÍm¤¸¹ulÀ¸¸Ét°€¹‰¥œ¤ì(€€€€€€€½¹ÍĞ•°€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°µÍm¤€¬€È€¸¹ulÀ¸¸Ét°€¹‰¥œ¤ì(€€€€€€€½¹ÍĞ•Ø€ôµÍm¤€¬€Ğ€¸¹ulÀ¸¹•±tì(€€€€€€€¤€¬ô€Ğ€¬•°ì(€€€€€€€Íİ¥Ñ €¡•Ğ¤ì(€€€€€€€€€€€€ĞÌ€ôøì€¼¼ÍÕÁÁ½ÉÑ•‘}Ù•ÉÍ¥½¹Ì(€€€€€€€€€€€€€€€½¹ÍĞÍØ€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°•ÙlÀ¸¸Ét°€¹‰¥œ¤ì(€€€€€€€€€€€€€€€¥˜€¡ÍØ€„ô€ÁàÀÌÀĞ¤É•ÑÕÉ¸•ÉÉ½È¹Q±ÍY•ÉÍ¥½¹9½ĞÄÌì(€€€€€€€€€€€€€€€½Ñ}Ù•ÉÍ¥½¸€ôÑÉÕ”ì(€€€€€€€€€€€ô°(€€€€€€€€€€€€ÔÄ€ôøì€¼¼­•å}Í¡…É”(€€€€€€€€€€€€€€€½¹ÍĞÉÀ€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°•ÙlÀ¸¸Ét°€¹‰¥œ¤ì(€€€€€€€€€€€€€€€½¹ÍĞ­°€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°•ÙlÈ¸¸Ñt°€¹‰¥œ¤ì(€€€€€€€€€€€€€€€¥˜€¡ÉÀ€„ô€ÁàÀÀÅ½È­°€„ô€ÌÈ¤É•ÑÕÉ¸•ÉÉ½È¹U¹ÍÕÁÁ½ÉÑ•‘-•åM¡…É”ì(€€€€€€€€€€€€€€€µ•µÁä ™Á••É}ÁÕˆ°•ÙlĞ¸¸ÌÙt¤ì(€€€€€€€€€€€€€€€½Ñ}­•ä€ôÑÉÕ”ì(€€€€€€€€€€€ô°(€€€€€€€€€€€•±Í”€ôøíô°(€€€€€€€ô(€€€ô(€€€¥˜€ …½Ñ}Ù•ÉÍ¥½¸¤É•ÑÕÉ¸•ÉÉ½È¹5¥ÍÍ¥¹MÕÁÁ½ÉÑ•‘Y•ÉÍ¥½¸ì(€€€¥˜€ …½Ñ}­•ä¤É•ÑÕÉ¸•ÉÉ½È¹5¥ÍÍ¥¹-•åM¡…É”ì(€€€|€ôÙ•ÉÍ¥½¸ì(€€€É•ÑÕÉ¸€¹ì€¹ÍÕ¥Ñ”€ôÍÕ¥Ñ”°€¹Á••É}ÁÕˆ€ôÁ••É}ÁÕˆôì)ô()½¹ÍĞ•ÉÑ¹ÑÉä€ôÍÑÉÕĞì‘•Èèmu½¹ÍĞÔàôì()™¸Á…ÉÍ••ÉÑ¥™¥…Ñ”¡µÍœèmu½¹ÍĞÔà°½ÕĞèmu•ÉÑ¹ÑÉä¤€…mu•ÉÑ¹ÑÉäì(€€€Ù…È¤èÕÍ¥é”€ô€Ğì(€€€½¹ÍĞÑá}±•¸€ôµÍm¥tì(€€€¤€¬ô€Ä€¬Ñá}±•¸ì(€€€½¹ÍĞ±¥ÍÑ}±•¸€ô€¡…Ì¡ÕÍ¥é”°µÍm¥t¤€ğğ€ÄØ¤ğ€¡…Ì¡ÕÍ¥é”°µÍm¤€¬€Åt¤€ğğ€à¤ğµÍm¤€¬€Étì(€€€¤€¬ô€Ìì(€€€½¹ÍĞ•¹€ô¤€¬±¥ÍÑ}±•¸ì(€€€Ù…È¸èÕÍ¥é”€ô€Àì(€€€İ¡¥±”€¡¤€ğ•¹…¹¸€ğ½ÕĞ¹±•¸¤ì(€€€€€€€½¹ÍĞ°€ô€¡…Ì¡ÕÍ¥é”°µÍm¥t¤€ğğ€ÄØ¤ğ€¡…Ì¡ÕÍ¥é”°µÍm¤€¬€Åt¤€ğğ€à¤ğµÍm¤€¬€Étì(€€€€€€€¤€¬ô€Ìì(€€€€€€€½ÕÑm¹t€ô€¹ì€¹‘•È€ôµÍm¤€¸¸¤€¬±tôì(€€€€€€€¤€¬ô°ì(€€€€€€€½¹ÍĞ•°€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°µÍm¤¸¹ulÀ¸¸Ét°€¹‰¥œ¤ì(€€€€€€€¤€¬ô€È€¬•°ì(€€€€€€€¸€¬ô€Äì(€€€ô(€€€É•ÑÕÉ¸½ÕÑlÀ¸¹¹tì)ô((¼¼¼Q1L€Ä¸Ì•ÉÑ¥™¥…Ñ•Y•É¥™äÍ¥¹…ÑÕÉ”Ù•É¥™¥…Ñ¥½¸€¡Í•ÉÙ•ÈÍ¥‘”¤¸)™¸Ù•É¥™å•ÉÑY•É¥™ä¡Í¡•µ”èÔÄØ°ÁÕ‰}­•å}Ñàè•ÉÑ¥™¥…Ñ”¹A…ÉÍ•°Í¥œèmu½¹ÍĞÔà°µÍœèmu½¹ÍĞmu½¹ÍĞÔà¤€…Ù½¥ì(€€€½¹ÍĞ‘Í…@ÈÔØ€ôÍÑ¹ÉåÁÑ¼¹Í¥¸¹•‘Í„¹‘Í…@ÈÔÙM¡„ÈÔØì(€€€½¹ÍĞ‘Í…@ÌàĞ€ôÍÑ¹ÉåÁÑ¼¹Í¥¸¹•‘Í„¹‘Í…@ÌàÑM¡„ÌàĞì(€€€Íİ¥Ñ €¡Í¡•µ”¤ì(€€€€€€€€ÁàÀĞÀÌ€ôøì(€€€€€€€€€€€½¹ÍĞÌ€ôÑÉä‘Í…@ÈÔØ¹M¥¹…ÑÕÉ”¹™É½µ•È¡Í¥œ¤ì(€€€€€€€€€€€½¹ÍĞ¬€ôÑÉä‘Í…@ÈÔØ¹AÕ‰±¥-•ä¹™É½µM•ŒÄ¡ÁÕ‰}­•å}Ñà¹ÁÕ‰-•ä ¤¤ì(€€€€€€€€€€€Ù…ÈØ€ôÑÉäÌ¹Ù•É¥™¥•È¡¬¤ì(€€€€€€€€€€€™½È€¡µÍœ¤ñÁğØ¹ÕÁ‘…Ñ”¡À¤ì(€€€€€€€€€€€ÑÉäØ¹Ù•É¥™ä ¤ì(€€€€€€€ô°(€€€€€€€€ÁàÀÔÀÌ€ôøì(€€€€€€€€€€€½¹ÍĞÌ€ôÑÉä‘Í…@ÌàĞ¹M¥¹…ÑÕÉ”¹™É½µ•È¡Í¥œ¤ì(€€€€€€€€€€€½¹ÍĞ¬€ôÑÉä‘Í…@ÌàĞ¹AÕ‰±¥-•ä¹™É½µM•ŒÄ¡ÁÕ‰}­•å}Ñà¹ÁÕ‰-•ä ¤¤ì(€€€€€€€€€€€Ù…ÈØ€ôÑÉäÌ¹Ù•É¥™¥•È¡¬¤ì(€€€€€€€€€€€™½È€¡µÍœ¤ñÁğØ¹ÕÁ‘…Ñ”¡À¤ì(€€€€€€€€€€€ÑÉäØ¹Ù•É¥™ä ¤ì(€€€€€€€ô°(€€€€€€€€ÁàÀàÀÜ€ôøì(€€€€€€€€€€€½¹ÍĞ€ôÍÑ¹ÉåÁÑ¼¹Í¥¸¹ÈÔÔÄäì(€€€€€€€€€€€¥˜€¡Í¥œ¹±•¸€„ô¹M¥¹…ÑÕÉ”¹•¹½‘•‘}±•¹Ñ ¤É•ÑÕÉ¸•ÉÉ½È¹	…‘M¥¹…ÑÕÉ•1•¹Ñ ì(€€€€€€€€€€€½¹ÍĞ¬€ôÑÉä¹AÕ‰±¥-•ä¹™É½µ	åÑ•Ì¡ÁÕ‰}­•å}Ñà¹ÁÕ‰-•ä ¥lÀ¸¹¹AÕ‰±¥-•ä¹•¹½‘•‘}±•¹Ñ¡t¸¨¤ì(€€€€€€€€€€€½¹ÍĞÌ€ô¹M¥¹…ÑÕÉ”¹™É½µ	åÑ•Ì¡Í¥lÀ¸¹¹M¥¹…ÑÕÉ”¹•¹½‘•‘}±•¹Ñ¡t¸¨¤ì(€€€€€€€€€€€Ù…ÈØ€ôÑÉäÌ¹Ù•É¥™¥•È¡¬¤ì(€€€€€€€€€€€™½È€¡µÍœ¤ñÁğØ¹ÕÁ‘…Ñ”¡À¤ì(€€€€€€€€€€€ÑÉäØ¹Ù•É¥™ä ¤ì(€€€€€€€ô°(€€€€€€€€ÁàÀàÀĞ°€ÁàÀàÀä€ôøÑÉäÉÍ…Y•É¥™ä¡ÍÑ¹ÉåÁÑ¼¹¡…Í ¹Í¡„È¹M¡„ÈÔØ°ÑÉÕ”°ÁÕ‰}­•å}Ñà°Í¥œ°µÍœ¤°(€€€€€€€€ÁàÀàÀÔ€ôøÑÉäÉÍ…Y•É¥™ä¡ÍÑ¹ÉåÁÑ¼¹¡…Í ¹Í¡„È¹M¡„ÌàĞ°ÑÉÕ”°ÁÕ‰}­•å}Ñà°Í¥œ°µÍœ¤°(€€€€€€€€ÁàÀàÀØ€ôøÑÉäÉÍ…Y•É¥™ä¡ÍÑ¹ÉåÁÑ¼¹¡…Í ¹Í¡„È¹M¡„ÔÄÈ°ÑÉÕ”°ÁÕ‰}­•å}Ñà°Í¥œ°µÍœ¤°(€€€€€€€€ÁàÀĞÀÄ€ôøÑÉäÉÍ…Y•É¥™ä¡ÍÑ¹ÉåÁÑ¼¹¡…Í ¹Í¡„È¹M¡„ÈÔØ°™…±Í”°ÁÕ‰}­•å}Ñà°Í¥œ°µÍœ¤°(€€€€€€€€ÁàÀÔÀÄ€ôøÑÉäÉÍ…Y•É¥™ä¡ÍÑ¹ÉåÁÑ¼¹¡…Í ¹Í¡„È¹M¡„ÌàĞ°™…±Í”°ÁÕ‰}­•å}Ñà°Í¥œ°µÍœ¤°(€€€€€€€€ÁàÀØÀÄ€ôøÑÉäÉÍ…Y•É¥™ä¡ÍÑ¹ÉåÁÑ¼¹¡…Í ¹Í¡„È¹M¡„ÔÄÈ°™…±Í”°ÁÕ‰}­•å}Ñà°Í¥œ°µÍœ¤°(€€€€€€€•±Í”€ôøÉ•ÑÕÉ¸•ÉÉ½È¹U¹ÍÕÁÁ½ÉÑ•‘M¥¹…ÑÕÉ•M¡•µ”°(€€€ô)ô((¼¼€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôô¡…¹‘Í¡…­”‘É¥Ù•È€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôô()™¸‘•É¥Ù•-•å%Ø¡Í•É•ĞèlÌÉuÔà°ÍÕ¥Ñ”èMÕ¥Ñ”¤-•åÌĞì(€€€€¼¼ƒšÎ£š?¾òi!-µáÁ…¹µ1…‰•°ƒj3¢úO–ë¦Vÿ–ê›7šb¼¥¹™¼ƒj’â¦£–"¾ò3–ş¦†ïš2$¥Á¡•Èƒr–ºx­•äƒ¦Vÿ–ê›–ÆW–ò¾ò0(€€€€¼¼ƒ’â7¢÷–#–ÆW–ò €ÌÈƒ–7š"«šZ·¾ò#¦
+’òk–ú_–"Ã–º3–£’â7–B3j–¾¦J—¾ò'(€€€Ù…È­•äèlÌÉuÔà€ôÍÁ±…Ğ À¤ì(€€€Íİ¥Ñ €¡­•å1•¹½È¡ÍÕ¥Ñ”¤¤ì(€€€€€€€€ÄØ€ôøì(€€€€€€€€€€€½¹ÍĞ¬€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°Í•É•Ğ°€‰­•äˆ°€ˆˆ°€ÄØ¤ì(€€€€€€€€€€€µ•µÁä¡­•ålÀ¸¸ÄÙt°€™¬¤ì(€€€€€€€ô°(€€€€€€€€ÌÈ€ôøì(€€€€€€€€€€€½¹ÍĞ¬€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°Í•É•Ğ°€‰­•äˆ°€ˆˆ°€ÌÈ¤ì(€€€€€€€€€€€µ•µÁä¡­•ålÀ¸¸ÌÉt°€™¬¤ì(€€€€€€€ô°(€€€€€€€•±Í”€ôøÕ¹É•…¡…‰±”°(€€€ô(€€€½¹ÍĞ¥Ø€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°Í•É•Ğ°€‰¥Øˆ°€ˆˆ°€ÄÈ¤ì(€€€É•ÑÕÉ¸€¹ì€¹­•ä€ô­•ä°€¹¥Ø€ô¥Øôì)ô()™¸¡ÍÁÁ•¹¡Œè€©½¹¸°ˆèmu½¹ÍĞÔà¤€…Ù½¥ì(€€€¥˜€¡Œ¹¡Í°€¬ˆ¹±•¸€øŒ¹¡Ì¹±•¸¤É•ÑÕÉ¸•ÉÉ½È¹!…¹‘Í¡…­•Q½½	¥œì(€€€µ•µÁä¡Œ¹¡ÍmŒ¹¡Í°¸¹ulÀ¸¹ˆ¹±•¹t°ˆ¤ì(€€€Œ¹¡Í°€¬ôˆ¹±•¸ì)ô()™¸¡Í9•áĞ¡Œè€©½¹¸¤€ımu½¹ÍĞÔàì(€€€¥˜€¡Œ¹¡Í°€´Œ¹¡ÍÀ€ğ€Ğ¤É•ÑÕÉ¸¹Õ±°ì(€€€½¹ÍĞ±•¸€ô€¡…Ì¡ÕÍ¥é”°Œ¹¡ÍmŒ¹¡ÍÀ€¬€Åt¤€ğğ€ÄØ¤ğ€¡…Ì¡ÕÍ¥é”°Œ¹¡ÍmŒ¹¡ÍÀ€¬€Ét¤€ğğ€à¤ğ…Ì¡ÕÍ¥é”°Œ¹¡ÍmŒ¹¡ÍÀ€¬€Ít¤ì(€€€¥˜€¡Œ¹¡Í°€´Œ¹¡ÍÀ€ğ€Ğ€¬±•¸¤É•ÑÕÉ¸¹Õ±°ì(€€€½¹ÍĞµÍœ€ôŒ¹¡ÍmŒ¹¡ÍÀ€¸¸Œ¹¡ÍÀ€¬€Ğ€¬±•¹tì(€€€Œ¹¡ÍÀ€¬ô€Ğ€¬±•¸ì(€€€É•ÑÕÉ¸µÍœì)ô()™¸ÉÍ…Y•É¥™ä¡½µÁÑ¥µ”!…Í èÑåÁ”°½µÁÑ¥µ”ÁÍÌè‰½½°°Á¬è•ÉÑ¥™¥…Ñ”¹A…ÉÍ•°Í¥œèmu½¹ÍĞÔà°µÍœèmu½¹ÍĞmu½¹ÍĞÔà¤€…Ù½¥ì(€€€½¹ÍĞ½µÁ½¹•¹ÑÌ€ôÑÉä•ÉÑ¥™¥…Ñ”¹ÉÍ„¹AÕ‰±¥-•ä¹Á…ÉÍ••È¡Á¬¹ÁÕ‰-•ä ¤¤ì(€€€½¹ÍĞµ½‘Õ±ÕÍ}±•¸€ô½µÁ½¹•¹ÑÌ¹µ½‘Õ±ÕÌ¹±•¸ì(€€€Íİ¥Ñ €¡µ½‘Õ±ÕÍ}±•¸¤ì(€€€€€€€¥¹±¥¹”€ÄÈà°€ÈÔØ°€ÌàĞ°€ÔÄÈ€ôøñµ±ğì(€€€€€€€€€€€½¹ÍĞ­•ä€ôÑÉä•ÉÑ¥™¥…Ñ”¹ÉÍ„¹AÕ‰±¥-•ä¹™É½µ	åÑ•Ì¡½µÁ½¹•¹ÑÌ¹•áÁ½¹•¹Ğ°½µÁ½¹•¹ÑÌ¹µ½‘Õ±ÕÌ¤ì(€€€€€€€€€€€¥˜€¡ÁÍÌ¤ì(€€€€€€€€€€€€€€€½¹ÍĞÍœ€ô•ÉÑ¥™¥…Ñ”¹ÉÍ„¹AMMM¥¹…ÑÕÉ”¹™É½µ	åÑ•Ì¡µ°°Í¥œ¤ì(€€€€€€€€€€€€€€€ÑÉä•ÉÑ¥™¥…Ñ”¹ÉÍ„¹AMMM¥¹…ÑÕÉ”¹½¹…ÑY•É¥™ä¡µ°°€™Íœ°µÍœ°­•ä°!…Í ¤ì(€€€€€€€€€€€ô•±Í”ì(€€€€€€€€€€€€€€€½¹ÍĞÍœ€ô•ÉÑ¥™¥…Ñ”¹ÉÍ„¹A-LÅØÅ|ÕM¥¹…ÑÕÉ”¹™É½µ	åÑ•Ì¡µ°°Í¥œ¤ì(€€€€€€€€€€€€€€€ÑÉä•ÉÑ¥™¥…Ñ”¹ÉÍ„¹A-LÅØÅ|ÕM¥¹…ÑÕÉ”¹½¹…ÑY•É¥™ä¡µ°°€™Íœ°µÍœ°­•ä°!…Í ¤ì(€€€€€€€€€€€ô(€€€€€€€ô°(€€€€€€€•±Í”€ôøÉ•ÑÕÉ¸•ÉÉ½È¹	…‘IÍ…	¥Ñ½Õ¹Ğ°(€€€ô)ô((¼¼€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôôƒ–¾ç–’XA$€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôô((¼¼¼ƒ–îë®/¢ş{š:—š&¦rj–>šVÃ)ÁÕˆ½¹ÍĞ=ÁÑ¥½¹Ì€ôÍÑÉÕĞì(€€€€¼¼¼ƒn»š‚’âïšrë¾ò!M9$ƒ’â;¢¾’æ›’âïšrë–B7š‚‡¦ª3j¦îc¢º“–>[–ó¾òm%@ƒ–¶_¦v‹¦?’â7–>G¦M9'¾ò'(€€€¡½ÍĞèmu½¹ÍĞÔà°(€€€€¼¼¼ƒn»š‚®¿–>¾ò#’îš^—–ş\¿’ş‡š¿R£¦S¾òmQ@ƒ¢ş{š:—RÇ¢ÂR£šZç–#¢†3–º3š"C¾ò'(€€€Á½ÉĞèÔÄØ€ô€ĞĞÌ°(€€€€¼¼¼ƒšbû–ò?¢šnXM9$€¼ƒ¢¾’æ›š‚‡¦ª3–B7¾ò#¦îc¢º€ô¡½ÍÓ¾ò'(€€€Í¹¤è€ımu½¹ÍĞÔà€ô¹Õ±°°(€€€€¼¼¼ƒ’òƒ¢úO–Æ¢¾ï–g–º{:Ã¾ò!Í½­•Ğ™“šÖ/¢¾Wš†§j–>¿¾ò'(€€€ÍÑÉ•…´èMÑÉ•…´°(€€€€¼¼¼ÑÉÕ”€ôƒ¢ŞÏ¢ş¢¾’æ›’âïšrë–B7š‚‡¦ª3¾ò#–¾ç–êP…¥½µ±¤ƒj€µ¬¼´µ¥¹Í•ÕÉ—¾ò'(€€€¥¹Í•ÕÉ”è‰½½°€ô™…±Í”°(€€€€¼¼¼ƒ¢šn[¢Â¢¾W–ò–Ï¾òo¦îc¢º“¢¾ï:¿–Š–>c¦<%=}Q1M}	U(€€€‘•‰Õœè€ı‰½½°€ô¹Õ±°°)ôì()™¸¥Í%Á1¥Ñ•É…°¡Ìèmu½¹ÍĞÔà¤‰½½°ì(€€€¥˜€¡ÍÑ¹%¼¹¹•Ğ¹%Á‘‘É•ÍÌ¹Á…ÉÍ”¡Ì°€À¤¤ñ}ğì(€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€ô•±Í”ñ}ğì(€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€ô)ô((¼¼¼ƒ–îë®,Q1L€Ä¸Ìƒ¢ş{š:—¾òk–º3š"CšVÓ’â«š>‡š&/¾ò#¢¾’æ›’âïšrë–B7š‚‡¦ª0€¬•ÉÑ¥™¥…Ñ•Y•É¥™äƒ¦ª3¶ø€¬(¼¼¼ƒ–>3šZä¥¹¥Í¡•“¾ò'–B;¢şS–n{R£–B;¦r ±½Í•9½Ñ¥™ä ¥€ƒ–4‘•¥¹¥Ğ ¥ƒ)ÁÕˆ™¸¥¹¥Ğ¡½ÁÑÌè=ÁÑ¥½¹Ì¤€„©½¹¸ì(€€€¥˜€¡½ÁÑÌ¹‘•‰Õœ¤ñ‘ğì(€€€€€€€‘•‰Õœ€ôì(€€€ô•±Í”¥˜€¡•¹Ù•‰Õœ ¤¤ì(€€€€€€€‘•‰Õœ€ôÑÉÕ”ì(€€€ô(€€€½¹ÍĞÁ„€ôÍÑ¹¡•…À¹ÍµÁ}…±±½…Ñ½Èì(€€€½¹ÍĞŒ€ôÑÉäÁ„¹É•…Ñ”¡½¹¸¤ì(€€€•ÉÉ‘•™•ÈÁ„¹‘•ÍÑÉ½ä¡Œ¤ì(€€€Œ¹ÍÑÉ•…´€ô½ÁÑÌ¹ÍÑÉ•…´ì(€€€Œ¹ÉÁ½Ì€ô€Àì(€€€Œ¹É•¹€ô€Àì(€€€Œ¹¡ÍÀ€ô€Àì(€€€Œ¹¡Í°€ô€Àì(€€€Œ¹Ñ±•¸€ô€Àì(€€€Œ¹É‘}±•¸€ô€Àì(€€€Œ¹É‘}Á½Ì€ô€Àì(€€€Œ¹É¬€ô€¹ì€¹‘•‰Õœ€ô‘•‰Õœôì(€€€Œ¹İ¬€ô€¹ì€¹‘•‰Õœ€ô‘•‰Õœôì(€€€ÑÉä¡…¹‘Í¡…­”¡Œ°½ÁÑÌ¤ì(€€€‘œ ‰mÑ±Ítƒš>‡š&/–º3š"@ÍÕ¥Ñ”õíÍõq¸ˆ°€¹íÍÕ¥Ñ•9…µ”¡Œ¹İ¬¹ÍÕ¥Ñ”¥ô¤ì(€€€É•ÑÕÉ¸Œì)ô((¼¼¼ƒ¦+šRû¢ş{š:—¾ò#’â7–Ï¦^·–êW–Æ’òƒ¢úO¾òmÍ½­•ĞƒRÇ¢ÂR£šZç¢«¢†3–Ï¦^·¾ò')ÁÕˆ™¸‘•¥¹¥Ğ¡Œè€©½¹¸¤Ù½¥ì(€€€ÍÑ¹¡•…À¹ÍµÁ}…±±½…Ñ½È¹‘•ÍÑÉ½ä¡Œ¤ì)ô()™¸¡…¹‘Í¡…­”¡Œè€©½¹¸°½ÁÑÌè=ÁÑ¥½¹Ì¤€…Ù½¥ì(€€€½¹ÍĞÙ•É¥™å}¹…µ”èmu½¹ÍĞÔà€ô½ÁÑÌ¹Í¹¤½É•±Í”½ÁÑÌ¹¡½ÍĞì(€€€½¹ÍĞÍ¹¥}Í•¹è€ımu½¹ÍĞÔà€ô½ÁÑÌ¹Í¹¤½É•±Í”€¡¥˜€¡¥Í%Á1¥Ñ•É…°¡½ÁÑÌ¹¡½ÍĞ¤¤¹Õ±°•±Í”½ÁÑÌ¹¡½ÍĞ¤ì(€€€‘œ ‰mÑ±Ítƒ¢ş{š:”íÍôéí‘ô€Í¹¤õíÍô€¥¹Í•ÕÉ”õíõq¸ˆ°€¹ì½ÁÑÌ¹¡½ÍĞ°½ÁÑÌ¹Á½ÉĞ°Í¹¥}Í•¹½É•±Í”€ˆ´ˆ°½ÁÑÌ¹¥¹Í•ÕÉ”ô¤ì((€€€€¼¼€´´´`ÈÔÔÄä­•åÁ…¥Ë¾ò!•ÑÉ…¹‘½´ƒšJ·7¾ò$´´´(€€€Ù…ÈÍ••èlÌÉuÔà€ôÕ¹‘•™¥¹•ì(€€€ÑÉäÉ…¹‘	åÑ•Ì ™Í••¤ì(€€€½¹ÍĞ­À€ô`ÈÔÔÄä¹-•åA…¥È¹•¹•É…Ñ••Ñ•Éµ¥¹¥ÍÑ¥Œ¡Í••¤ì((€€€Ù…È¡}‰Õ˜èlÄÀÈÑuÔà€ôÕ¹‘•™¥¹•ì(€€€½¹ÍĞ €ôÑÉä‰Õ¥±‘±¥•¹Ñ!•±±¼ ™¡}‰Õ˜°Í¹¥}Í•¹°€™­À¤ì(€€€Œ¹ÑÉ…¹ÍÉ¥ÁÑÁÁ•¹¡ ¤ì(€€€ÑÉäŒ¹İÉ¥Ñ•I•½É¡I•QåÁ”¹¡…¹‘Í¡…­”° ¤ì(€€€‘œ ‰mÑ±Ít€´ø±¥•¹Ñ!•±±¼€¡í‘ô‰åÑ•Ì°àÈÔÔÄä­•å}Í¡…É”¥q¸ˆ°€¹í ¹±•¹ô¤ì((€€€€¼¼€´´´ƒšb;šZ™±¥¡Ó¾òk¢¾ï–"ÀM•ÉÙ•É!•±±¼€´´´(€€€Ù…ÈÍÕ¥Ñ”èMÕ¥Ñ”€ô€¹¹½¹”ì(€€€Ù…ÈÁ••É}ÁÕˆèlÌÉuÔà€ôÕ¹‘•™¥¹•ì(€€€İ¡¥±”€¡ÑÉÕ”¤ì(€€€€€€€½¹ÍĞÉ•Œ€ôÑÉäŒ¹É•…‘I•½É‘I…Ü ¤ì(€€€€€€€½¹ÍĞÁ…å±½…€ôŒ¹É‰Õ™mŒ¹ÉÁ½Ì€¸¸Œ¹ÉÁ½Ì€¬É•Œ¹±•¹tì(€€€€€€€Œ¹ÉÁ½Ì€¬ôÉ•Œ¹±•¸ì(€€€€€€€¥˜€¡É•Œ¹Ğ€ôôI•QåÁ”¹¡…¹•}¥Á¡•É}ÍÁ•Œ¤ì(€€€€€€€€€€€‘œ ‰mÑ±Ít€ğ´¡…¹•}¥Á¡•É}ÍÁ•¾ò#–ó–ºçš¢‡–ò?¾ò3–ş÷V—¾ò%q¸ˆ°€¹íô¤ì(€€€€€€€€€€€½¹Ñ¥¹Õ”ì(€€€€€€€ô(€€€€€€€¥˜€¡É•Œ¹Ğ€ôôI•QåÁ”¹…±•ÉĞ¤ì(€€€€€€€€€€€½¹ÍĞ‘•ÍŒèÔà€ô¥˜€¡Á…å±½…¹±•¸€øô€È¤Á…å±½…‘lÅt•±Í”€Àì(€€€€€€€€€€€ÍÑ¹‘•‰Õœ¹ÁÉ¥¹Ğ ‰mÑ±Ítƒš>‡š&/–’Ç¢Ò—¾òkšr7–*‡®¿šb;šZ…±•ÉĞ‘•ÍŒõí‘õq¸ˆ°€¹í‘•Íô¤ì(€€€€€€€€€€€É•ÑÕÉ¸•ÉÉ½È¹M•ÉÙ•É±•ÉĞì(€€€€€€€ô(€€€€€€€¥˜€¡É•Œ¹Ğ€„ôI•QåÁ”¹¡…¹‘Í¡…­”¤É•ÑÕÉ¸•ÉÉ½È¹U¹•áÁ•Ñ•‘I•½É‘QåÁ”ì(€€€€€€€ÑÉä¡ÍÁÁ•¹¡Œ°Á…å±½…¤ì(€€€€€€€İ¡¥±”€¡¡Í9•áĞ¡Œ¤¤ñµÍğì(€€€€€€€€€€€¥˜€¡µÍlÁt€„ô!Ì¹Í•ÉÙ•É}¡•±±¼¤É•ÑÕÉ¸•ÉÉ½È¹áÁ•Ñ•‘M•ÉÙ•É!•±±¼ì(€€€€€€€€€€€½¹ÍĞ¥¹™¼€ôÑÉäÁ…ÉÍ•M•ÉÙ•É!•±±¼¡µÍœ¤ì(€€€€€€€€€€€ÍÕ¥Ñ”€ô¥¹™¼¹ÍÕ¥Ñ”ì(€€€€€€€€€€€Á••É}ÁÕˆ€ô¥¹™¼¹Á••É}ÁÕˆì(€€€€€€€€€€€Œ¹ÑÉ…¹ÍÉ¥ÁÑÁÁ•¹¡µÍœ¤ì(€€€€€€€€€€€‘œ ‰mÑ±Ít€ğ´M•ÉÙ•É!•±±¼ÍÕ¥Ñ”õíÍôÙ•ÉÍ¥½¸ôÁàÀÌÀÑq¸ˆ°€¹íÍÕ¥Ñ•9…µ”¡ÍÕ¥Ñ”¥ô¤ì(€€€€€€€€€€€‰É•…¬ì(€€€€€€€ô(€€€€€€€‰É•…¬ì(€€€ô((€€€€¼¼€´´´­•äÍ¡•‘Õ±—¾ò!Q1L€Ä¸Ì°M!´ÈÔÛ¾ò$´´´(€€€½¹ÍĞ•‘¡”€ôÑÉä`ÈÔÔÄä¹Í…±…ÉµÕ±Ğ¡­À¹Í•É•Ñ}­•ä°Á••É}ÁÕˆ¤ì(€€€½¹ÍĞé•É¼ÌÈ€ô…Ì¡lÌÉuÔà°ÍÁ±…Ğ À¤¤ì(€€€½¹ÍĞ• €ô•µÁÑå!…Í ¡M¡„ÈÔØ¤ì(€€€½¹ÍĞ•…É±å}Í•É•Ğ€ô!­‘™M¡„ÈÔØ¹•áÑÉ…Ğ ™é•É¼ÌÈ°€™é•É¼ÌÈ¤ì(€€€½¹ÍĞÄ€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°•…É±å}Í•É•Ğ°€‰‘•É¥Ù•ˆ°€™• °€ÌÈ¤ì(€€€½¹ÍĞ¡…¹‘Í¡…­•}Í•É•Ğ€ô!­‘™M¡„ÈÔØ¹•áÑÉ…Ğ ™Ä°€™•‘¡”¤ì(€€€½¹ÍĞÍ¡}Ñ €ôŒ¹ÑÉ…¹ÍÉ¥ÁÑ!…Í  ¤ì(€€€½¹ÍĞ}¡Ì€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°¡…¹‘Í¡…­•}Í•É•Ğ°€‰Œ¡ÌÑÉ…™™¥Œˆ°€™Í¡}Ñ °€ÌÈ¤ì(€€€½¹ÍĞÍ}¡Ì€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°¡…¹‘Í¡…­•}Í•É•Ğ°€‰Ì¡ÌÑÉ…™™¥Œˆ°€™Í¡}Ñ °€ÌÈ¤ì(€€€½¹ÍĞ¬€ô‘•É¥Ù•-•å%Ø¡}¡Ì°ÍÕ¥Ñ”¤ì(€€€½¹ÍĞÍ¬€ô‘•É¥Ù•-•å%Ø¡Í}¡Ì°ÍÕ¥Ñ”¤ì(€€€Œ¹É¬€ô€¹ì€¹ÍÕ¥Ñ”€ôÍÕ¥Ñ”°€¹­•ä€ôÍ¬¹­•ä°€¹¥Ø€ôÍ¬¹¥Ø°€¹‘•‰Õœ€ô‘•‰Õœôì(€€€Œ¹İ¬€ô€¹ì€¹ÍÕ¥Ñ”€ôÍÕ¥Ñ”°€¹­•ä€ô¬¹­•ä°€¹¥Ø€ô¬¹¥Ø°€¹‘•‰Õœ€ô‘•‰Õœôì(€€€‘œ ‰mÑ±Ít!ƒ–º3š"C¾ò1¡…¹‘Í¡…­”ÑÉ…™™¥Œ­•åÌƒ–ÂÇî©q¸ˆ°€¹íô¤ì((€€€€¼¼€´´´ƒ–*ƒ–¾™±¥¡Ó¾òi€¼•ÉÑ¥™¥…Ñ”€¼•ÉÑ¥™¥…Ñ•Y•É¥™ä€¼¥¹¥Í¡•€´´´(€€€Ù…È•ÉÑÌèlÄÙu•ÉÑ¹ÑÉä€ôÕ¹‘•™¥¹•ì(€€€Ù…È¹}•ÉÑÌèÕÍ¥é”€ô€Àì(€€€Ù…È±•…˜è•ÉÑ¥™¥…Ñ”¹A…ÉÍ•€ôÕ¹‘•™¥¹•ì(€€€Ù…È½Ñ}•”€ô™…±Í”ì(€€€Ù…È½Ñ}•ÉĞ€ô™…±Í”ì(€€€Ù…È½Ñ}Ø€ô™…±Í”ì(€€€Ù…È½Ñ}™¥¸€ô™…±Í”ì(€€€Ù…È™±¥¡ĞèlÄØÌàÑuÔà€ôÕ¹‘•™¥¹•ì(€€€½¹ÍĞÙ}Ñà€ô€‰Q1L€Ä¸Ì°Í•ÉÙ•È•ÉÑ¥™¥…Ñ•Y•É¥™äˆì((€€€İ¡¥±”€ …½Ñ}™¥¸¤ì(€€€€€€€½¹ÍĞ¸€ôÑÉäŒ¹É•…‘ÁÁI•½É ™™±¥¡Ğ¤ì(€€€€€€€¥˜€¡¸€ôô€À¤½¹Ñ¥¹Õ”ì(€€€€€€€ÑÉä¡ÍÁÁ•¹¡Œ°™±¥¡ÑlÀ¸¹¹t¤ì(€€€€€€€İ¡¥±”€¡¡Í9•áĞ¡Œ¤¤ñµÍğì(€€€€€€€€€€€Íİ¥Ñ €¡µÍlÁt¤ì(€€€€€€€€€€€€€€€!Ì¹•¹ÉåÁÑ•‘}•áÑ•¹Í¥½¹Ì€ôøì(€€€€€€€€€€€€€€€€€€€Œ¹ÑÉ…¹ÍÉ¥ÁÑÁÁ•¹¡µÍœ¤ì(€€€€€€€€€€€€€€€€€€€½Ñ}•”€ôÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€‘œ ‰mÑ±Ít€ğ´¹ÉåÁÑ•‘áÑ•¹Í¥½¹Ì€¡í‘ô¥q¸ˆ°€¹íµÍœ¹±•¸€´€Ñô¤ì(€€€€€€€€€€€€€€€ô°(€€€€€€€€€€€€€€€!Ì¹•ÉÑ¥™¥…Ñ”€ôøì(€€€€€€€€€€€€€€€€€€€¹}•ÉÑÌ€ô€¡Á…ÉÍ••ÉÑ¥™¥…Ñ”¡µÍœ°€™•ÉÑÌ¤…Ñ É•ÑÕÉ¸•ÉÉ½È¹•ÉÑA…ÉÍ•…¥±•¤¹±•¸ì(€€€€€€€€€€€€€€€€€€€¥˜€¡¹}•ÉÑÌ€ôô€À¤É•ÑÕÉ¸•ÉÉ½È¹µÁÑå•ÉÑ¥™¥…Ñ•¡…¥¸ì(€€€€€€€€€€€€€€€€€€€±•…˜€ôÑÉä•ÉÑ¥™¥…Ñ”¹Á…ÉÍ” ¹ì€¹‰Õ™™•È€ô•ÉÑÍlÁt¹‘•È°€¹¥¹‘•à€ô€Àô¤ì(€€€€€€€€€€€€€€€€€€€Œ¹ÑÉ…¹ÍÉ¥ÁÑÁÁ•¹¡µÍœ¤ì(€€€€€€€€€€€€€€€€€€€½Ñ}•ÉĞ€ôÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€‘œ ‰mÑ±Ít€ğ´•ÉÑ¥™¥…Ñ”èí‘ôƒ–ò€°ƒ–>Û–¶@í‘ô°ÁÕ‰­•äõíÍõq¸ˆ°€¹ì¹}•ÉÑÌ°•ÉÑÍlÁt¹‘•È¹±•¸°Ñ…9…µ”¡±•…˜¹ÁÕ‰}­•å}…±¼¤ô¤ì(€€€€€€€€€€€€€€€€€€€¥˜€ …½ÁÑÌ¹¥¹Í•ÕÉ”¤ì(€€€€€€€€€€€€€€€€€€€€€€€±•…˜¹Ù•É¥™å!½ÍÑ9…µ”¡Ù•É¥™å}¹…µ”¤…Ñ ñ•ğì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ÍÑ¹‘•‰Õœ¹ÁÉ¥¹Ğ ‰mÑ±Ítƒ¢¾’æ›’âïšrë–B7š‚‡¦ª3–’Ç¢Ò—¾òiíÍôƒ’â7–2ç¦7¾ò!íÑ÷¾ò%q¸ˆ°€¹ìÙ•É¥™å}¹…µ”°”ô¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸•ÉÉ½È¹•ÉÑ¥™¥…Ñ•!½ÍÑ5¥Íµ…Ñ ì(€€€€€€€€€€€€€€€€€€€€€€€ôì(€€€€€€€€€€€€€€€€€€€€€€€‘œ ‰m•ÉÑt=/¾òk¢¾’æ›–2ç¦4íÍõq¸ˆ°€¹íÙ•É¥™å}¹…µ•ô¤ì(€€€€€€€€€€€€€€€€€€€ô•±Í”ì(€€€€€€€€€€€€€€€€€€€€€€€‘œ ‰m•ÉÑtƒ¢ŞÏ¢ş’âïšrë–B7š‚‡¦ª3¾ò!¥¹Í•ÕÉ—¾ò%q¸ˆ°€¹íô¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô°(€€€€€€€€€€€€€€€!Ì¹•ÉÑ¥™¥…Ñ•}Ù•É¥™ä€ôøì(€€€€€€€€€€€€€€€€€€€½¹ÍĞÑ €ôŒ¹ÑÉ…¹ÍÉ¥ÁÑ!…Í  ¤ì(€€€€€€€€€€€€€€€€€€€½¹ÍĞÍ¡•µ”€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°µÍlĞ¸¸Ùt°€¹‰¥œ¤ì(€€€€€€€€€€€€€€€€€€€½¹ÍĞÍ¥}±•¸èÕÍ¥é”€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°µÍlØ¸¸át°€¹‰¥œ¤ì(€€€€€€€€€€€€€€€€€€€¥˜€ à€¬Í¥}±•¸€øµÍœ¹±•¸¤É•ÑÕÉ¸•ÉÉ½È¹	…‘•ÉÑY•É¥™äì(€€€€€€€€€€€€€€€€€€€½¹ÍĞÍ¥œ€ôµÍlà€¸¸€à€¬Í¥}±•¹tì(€€€€€€€€€€€€€€€€€€€½¹ÍĞÍÁ…•Ì€ô…Ì¡lØÑuÔà°ÍÁ±…Ğ ÁàÈÀ¤¤ì(€€€€€€€€€€€€€€€€€€€½¹ÍĞé•É¼€ôm}uÔáìÁôì(€€€€€€€€€€€€€€€€€€€½¹ÍĞÁ…ÉÑÌ€ôm}umu½¹ÍĞÔáì€™ÍÁ…•Ì°Ù}Ñà°€™é•É¼°€™Ñ ôì(€€€€€€€€€€€€€€€€€€€Ù•É¥™å•ÉÑY•É¥™ä¡Í¡•µ”°±•…˜°Í¥œ°€™Á…ÉÑÌ¤…Ñ ñ•ğì(€€€€€€€€€€€€€€€€€€€€€€€ÍÑ¹‘•‰Õœ¹ÁÉ¥¹Ğ ‰mÑ±Ít•ÉÑ¥™¥…Ñ•Y•É¥™äƒ¦ª3¶û–’Ç¢Ò”Í¡•µ”ôÁáíàèÀøÑôèíÑõq¸ˆ°€¹ìÍ¡•µ”°”ô¤ì(€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸”ì(€€€€€€€€€€€€€€€€€€€ôì(€€€€€€€€€€€€€€€€€€€Œ¹ÑÉ…¹ÍÉ¥ÁÑÁÁ•¹¡µÍœ¤ì(€€€€€€€€€€€€€€€€€€€½Ñ}Ø€ôÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€‘œ ‰m•ÉÑt=/¾òi•ÉÑ¥™¥…Ñ•Y•É¥™äƒ¦ª3¶û¦k¢ş¾ò!Í¡•µ”ôÁáíàèÀøÑ÷¾ò%q¸ˆ°€¹íÍ¡•µ•ô¤ì(€€€€€€€€€€€€€€€ô°(€€€€€€€€€€€€€€€!Ì¹™¥¹¥Í¡•€ôøì(€€€€€€€€€€€€€€€€€€€½¹ÍĞÑ €ôŒ¹ÑÉ…¹ÍÉ¥ÁÑ!…Í  ¤ì(€€€€€€€€€€€€€€€€€€€½¹ÍĞ•áÁ•Ğ€ô™¥¹¥Í¡•‘Y•É¥™ä¡Í}¡Ì°Ñ ¤ì(€€€€€€€€€€€€€€€€€€€¥˜€ …ÍÑ¹ÉåÁÑ¼¹Ñ¥µ¥¹}Í…™”¹•Å°¡lÌÉuÔà°•áÁ•Ğ°µÍlĞ¸¸ÌÙt¸¨¤¤ì(€€€€€€€€€€€€€€€€€€€€€€€ÍÑ¹‘•‰Õœ¹ÁÉ¥¹Ğ ‰mÑ±Ítƒšr7–*‡®¼¥¹¥Í¡•Ù•É¥™å}‘…Ñ„ƒš‚‡¦ª3–’Ç¢Ò•q¸ˆ°€¹íô¤ì(€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸•ÉÉ½È¹	…‘¥¹¥Í¡•ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€Œ¹ÑÉ…¹ÍÉ¥ÁÑÁÁ•¹¡µÍœ¤ì(€€€€€€€€€€€€€€€€€€€½Ñ}™¥¸€ôÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€‘œ ‰mÑ±Ít€ğ´¥¹¥Í¡•=/¾ò#šr7–*‡®¼Ù•É¥™å}‘…Ñ„ƒ–2ç¦7¾ò%q¸ˆ°€¹íô¤ì(€€€€€€€€€€€€€€€ô°(€€€€€€€€€€€€€€€•±Í”€ôø‘œ ‰mÑ±Ítƒ¾ò#–ş÷V—š>‡š&/šÚ#š¼ÑåÁ”õí‘ô°í‘ô¾ò%q¸ˆ°€¹ìµÍlÁt°µÍœ¹±•¸ô¤°(€€€€€€€€€€€ô(€€€€€€€ô(€€€ô(€€€¥˜€ …½Ñ}•”½È€…½Ñ}•ÉĞ½È€…½Ñ}Ø¤ì(€€€€€€€ÍÑ¹‘•‰Õœ¹ÁÉ¥¹Ğ ‰mÑ±Ítƒšr7–*‡®¼™±¥¡Ğƒ’â7–º3šVÓ¾òi•”õíô•ÉĞõíôØõíõq¸ˆ°€¹ì½Ñ}•”°½Ñ}•ÉĞ°½Ñ}Øô¤ì(€€€€€€€É•ÑÕÉ¸•ÉÉ½È¹%¹½µÁ±•Ñ•±¥¡Ğì(€€€ô((€€€€¼¼€´´´ƒ–êSR£–¾¦J”€¬ƒ–º‹š"ß®¼¥¹¥Í¡•€´´´(€€€½¹ÍĞÈ€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°¡…¹‘Í¡…­•}Í•É•Ğ°€‰‘•É¥Ù•ˆ°€™• °€ÌÈ¤ì(€€€½¹ÍĞµ…ÍÑ•É}Í•É•Ğ€ô!­‘™M¡„ÈÔØ¹•áÑÉ…Ğ ™È°€™é•É¼ÌÈ¤ì(€€€½¹ÍĞ™¥¹}Ñ €ôŒ¹ÑÉ…¹ÍÉ¥ÁÑ!…Í  ¤ì(€€€½¹ÍĞ}…À€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°µ…ÍÑ•É}Í•É•Ğ°€‰Œ…ÀÑÉ…™™¥Œˆ°€™™¥¹}Ñ °€ÌÈ¤ì(€€€½¹ÍĞÍ}…À€ô¡­‘™áÁ…¹‘1…‰•°¡!­‘™M¡„ÈÔØ°µ…ÍÑ•É}Í•É•Ğ°€‰Ì…ÀÑÉ…™™¥Œˆ°€™™¥¹}Ñ °€ÌÈ¤ì(€€€ÑÉäŒ¹ÍÑÉ•…´¹İÉ¥Ñ•±° ™m}uÔáì€ÁàÄĞ°€ÁàÀÌ°€ÁàÀÌ°€ÁàÀÀ°€ÁàÀÄ°€ÁàÀÄô¤ì€¼¼ƒ–ó–ºçš¢‡–ò<L(€€€½¹ÍĞ±¥•¹Ñ}™¥¹¥Í¡•€ô™¥¹¥Í¡•‘Y•É¥™ä¡}¡Ì°™¥¹}Ñ ¤ì(€€€Ù…È™¥¹}µÍœèlÌÙuÔà€ôÕ¹‘•™¥¹•ì€¼¼¥¹¥Í¡•ƒš>‡š&/šÚ#š¿–ş¦†ï–â˜€Ğƒ–¶_¢*–’Ğ(€€€™¥¹}µÍlÁt€ô!Ì¹™¥¹¥Í¡•ì(€€€™¥¹}µÍlÅt€ô€Àì(€€€™¥¹}µÍlÉt€ô€Àì(€€€™¥¹}µÍlÍt€ô€ÌÈì(€€€µ•µÁä¡™¥¹}µÍlĞ¸¸ÌÙt°€™±¥•¹Ñ}™¥¹¥Í¡•¤ì(€€€ÑÉäŒ¹İÉ¥Ñ•I•½É¡I•QåÁ”¹¡…¹‘Í¡…­”°€™™¥¹}µÍœ¤ì(€€€½¹ÍĞ­„€ô‘•É¥Ù•-•å%Ø¡}…À°ÍÕ¥Ñ”¤ì(€€€½¹ÍĞÍ­„€ô‘•É¥Ù•-•å%Ø¡Í}…À°ÍÕ¥Ñ”¤ì(€€€Œ¹İ¬€ô€¹ì€¹ÍÕ¥Ñ”€ôÍÕ¥Ñ”°€¹­•ä€ô­„¹­•ä°€¹¥Ø€ô­„¹¥Ø°€¹‘•‰Õœ€ô‘•‰Õœôì(€€€Œ¹É¬€ô€¹ì€¹ÍÕ¥Ñ”€ôÍÕ¥Ñ”°€¹­•ä€ôÍ­„¹­•ä°€¹¥Ø€ôÍ­„¹¥Ø°€¹‘•‰Õœ€ô‘•‰Õœôì(€€€‘œ ‰mÑ±Ít€´ø¥¹¥Í¡•=/¾ò#–º‹š"ß®¿¾ò%q¸ˆ°€¹íô¤ì)ô((¼¼€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôôƒ–6W–šÖ/¢¾W¾ò#šÖ/¢¾Wš†¤MÑÉ•…·¾ò$€ôôôôôôôôôôôôôôôôôôôôôôôôôôôôôô()½¹ÍĞ5•µMÑÉ•…´€ôÍÑÉÕĞì(€€€‘…Ñ„èlØĞ€¨€ÄÀÈÑuÔà€ôÕ¹‘•™¥¹•°(€€€±•¸èÕÍ¥é”€ô€À°((€€€™¸É•…‘¸¡Ñàè€ü©…¹å½Á…ÅÕ”°‰Õ˜èmuÔà¤…¹å•ÉÉ½È…ÕÍ¥é”ì(€€€€€€€|€ôÑàì(€€€€€€€|€ô‰Õ˜ì(€€€€€€€É•ÑÕÉ¸€Àì€¼¼ƒšr³š†§–>«R£’ê;–g¢Ş¿–ú–¾çš.7¾òk¢¾ïšZç–BGnÓš:”=(€€€ô((€€€™¸İÉ¥Ñ•¸¡Ñàè€ü©…¹å½Á…ÅÕ”°‰Õ˜èmu½¹ÍĞÔà¤…¹å•ÉÉ½È…ÕÍ¥é”ì(€€€€€€€½¹ÍĞÍ•±˜è€©5•µMÑÉ•…´€ôÁÑÉ…ÍĞ¡…±¥¹…ÍĞ¡Ñà¸ü¤¤ì(€€€€€€€¥˜€¡Í•±˜¹±•¸€¬‰Õ˜¹±•¸€øÍ•±˜¹‘…Ñ„¹±•¸¤É•ÑÕÉ¸•ÉÉ½È¹9½MÁ…•1•™Ğì(€€€€€€€µ•µÁä¡Í•±˜¹‘…Ñ…mÍ•±˜¹±•¸¸¹ulÀ¸¹‰Õ˜¹±•¹t°‰Õ˜¤ì(€€€€€€€Í•±˜¹±•¸€¬ô‰Õ˜¹±•¸ì(€€€€€€€É•ÑÕÉ¸‰Õ˜¹±•¸ì(€€€ô)ôì()Ñ•ÍĞ€‰¥Í%Á1¥Ñ•É…°ˆì(€€€ÑÉäÍÑ¹Ñ•ÍÑ¥¹œ¹•áÁ•Ğ¡¥Í%Á1¥Ñ•É…° ˆÄÈÜ¸À¸À¸Äˆ¤¤ì(€€€ÑÉäÍÑ¹Ñ•ÍÑ¥¹œ¹•áÁ•Ğ¡¥Í%Á1¥Ñ•É…° ˆèèÄˆ¤¤ì(€€€ÑÉäÍÑ¹Ñ•ÍÑ¥¹œ¹•áÁ•Ğ …¥Í%Á1¥Ñ•É…° ‰•á…µÁ±”¹½´ˆ¤¤ì)ô()Ñ•ÍĞ€‹¦Vÿ–g–—š2'¢ºÃ–öW–Æ–"–âŸ¾ò3–>¿R£–B3’â––_–¾¦J—–n{¢Œˆì(€€€½¹ÍĞÁ„€ôÍÑ¹Ñ•ÍÑ¥¹œ¹…±±½…Ñ½Èì(€€€½¹ÍĞŒ€ôÑÉäÁ„¹É•…Ñ”¡½¹¸¤ì(€€€‘•™•ÈÁ„¹‘•ÍÑÉ½ä¡Œ¤ì((€€€Ù…ÈÍÑÕˆè5•µMÑÉ•…´€ô€¹íôì(€€€½¹ÍĞ­•äèlÌÉuÔà€ôÍÁ±…Ğ Áá¤ì(€€€½¹ÍĞ¥ØèlÄÉuÔà€ôÍÁ±…Ğ ÁàÄÄ¤ì(€€€Œ¸¨€ô½¹¹ì(€€€€€€€€¹ÍÑÉ•…´€ô€¹ì€¹Ñà€ô€™ÍÑÕˆ°€¹É•…‘¸€ô5•µMÑÉ•…´¹É•…‘¸°€¹İÉ¥Ñ•¸€ô5•µMÑÉ•…´¹İÉ¥Ñ•¸ô°(€€€€€€€€¹É¬€ô€¹ì€¹ÍÕ¥Ñ”€ô€¹…•Í|ÄÈá}µ}Í¡„ÈÔØ°€¹­•ä€ô­•ä°€¹¥Ø€ô¥Øô°(€€€€€€€€¹İ¬€ô€¹ì€¹ÍÕ¥Ñ”€ô€¹…•Í|ÄÈá}µ}Í¡„ÈÔØ°€¹­•ä€ô­•ä°€¹¥Ø€ô¥Øô°(€€€ôì((€€€Ù…ÈÁ…å±½…èlĞÀÀÀÁuÔà€ôÕ¹‘•™¥¹•ì(€€€™½È€ ™Á…å±½…°€À¸¸¤ğ©ˆ°¥ğˆ¸¨€ôÑÉÕ¹…Ñ”¡¤¤ì(€€€ÑÉäŒ¹İÉ¥Ñ” ™Á…å±½…¤ì((€€€Ù…È¡•¬èQÉ…™™¥-•åÌ€ô€¹ì€¹ÍÕ¥Ñ”€ô€¹…•Í|ÄÈá}µ}Í¡„ÈÔØ°€¹­•ä€ô­•ä°€¹¥Ø€ô¥Øô°(€€€Ù…È½™˜èÕÍ¥é”€ô€Àì(€€€Ù…ÈÁ±…¥¸èmI}5auÔà€ôÕ¹‘•™¥¹•ì(€€€Ù…ÈÑ½Ñ…°èÕÍ¥é”€ô€Àì(€€€Ù…ÈÉ•½É‘ÌèÕÍ¥é”€ô€Àì(€€€İ¡¥±”€¡½™˜€ğÍÑÕˆ¹±•¸¤ì(€€€€€€€ÑÉäÍÑ¹Ñ•ÍÑ¥¹œ¹•áÁ•Ğ¡ÍÑÕˆ¹±•¸€´½™˜€øô€Ô¤ì(€€€€€€€ÑÉäÍÑ¹Ñ•ÍÑ¥¹œ¹•áÁ•ÑÅÕ…°¡I•QåÁ”¹…ÁÁ±¥…Ñ¥½¹}‘…Ñ„°ÍÑÕˆ¹‘…Ñ…m½™™t¤ì(€€€€€€€½¹ÍĞ±•¸€ôÍÑ¹µ•´¹É•…‘%¹Ğ¡ÔÄØ°ÍÑÕˆ¹‘…Ñ…m½™˜€¬€Ì€¸¹ulÀ¸¸Ét°€¹‰¥œ¤ì(€€€€€€€½¹ÍĞ•¹Œ€ôÍÑÕˆ¹‘…Ñ…m½™˜€¬€Ô€¸¸½™˜€¬€Ô€¬±•¹tì(€€€€€€€Ù…ÈÑ…œèlÄÙuÔà€ôÕ¹‘•™¥¹•ì(€€€€€€€µ•µÁä ™Ñ…œ°•¹m•¹Œ¹±•¸€´€ÄØ€¸¹t¤ì(€€€€€€€½¹ÍĞ‰½‘ä€ô•¹lÀ€¸¸•¹Œ¹±•¸€´€ÄÙtì(€€€€€€€ÑÉä½Á•¹]¥Ñ  ™¡•¬°Á±…¥¹lÀ¸¹‰½‘ä¹±•¹t°‰½‘ä°Ñ…œ°ÍÑÕˆ¹‘…Ñ…m½™˜€¸¸½™˜€¬€Õt¤ì(€€€€€€€€¼¼ƒšr³–º{:Ã–¾ç3–>G–ë7¢ºÃ–öWj––Æ–â–Æ €ôo––ºåum½¹Ñ•¹Ñ}ÑåÁ•t(€€€€€€€ÑÉäÍÑ¹Ñ•ÍÑ¥¹œ¹•áÁ•ÑÅÕ…°¡I•QåÁ”¹…ÁÁ±¥…Ñ¥½¹}‘…Ñ„°Á±…¥¹m‰½‘ä¹±•¸€´€Åt¤ì(€€€€€€€™½È€ À¸¹‰½‘ä¹±•¸€´€Ä¤ñ¥ğì(€€€€€€€€€€€ÑÉäÍÑ¹Ñ•ÍÑ¥¹œ¹•áÁ•ÑÅÕ…°¡Á…å±½…‘mÑ½Ñ…°€¬¥t°Á±…¥¹m¥t¤ì(€€€€€€€ô(€€€€€€€Ñ½Ñ…°€¬ô‰½‘ä¹±•¸€´€Äì(€€€€€€€½™˜€¬ô€Ô€¬±•¸ì(€€€€€€€É•½É‘Ì€¬ô€Äì(€€€ô(€€€ÑÉäÍÑ¹Ñ•ÍÑ¥¹œ¹•áÁ•ÑÅÕ…°¡…Ì¡ÕÍ¥é”°€ĞÀÀÀÀ¤°Ñ½Ñ…°¤ì(€€€ÑÉäÍÑ¹Ñ•ÍÑ¥¹œ¹•áÁ•ÑÅÕ…°¡…Ì¡ÕÍ¥é”°€Ì¤°É•½É‘Ì¤ì€¼¼€ÄØÌØÜ€¬€ÄØÌØÜ€¬€ÜÈØØ)ô(
