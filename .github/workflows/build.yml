@@ -51,7 +51,17 @@ jobs:
       - name: 构建
         if: steps.probe.outputs.exists == 'true'
         working-directory: ${{ matrix.tool }}
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+        shell: bash
+        run: |
+          set -o pipefail
+          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} 2>&1 | tee build.log
+
+      - name: 失败时上传构建日志
+        if: failure() && steps.probe.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: err-${{ matrix.tool }}-${{ matrix.target }}
+          path: ${{ matrix.tool }}/build.log
 
       - name: 收集产物
         if: steps.probe.outputs.exists == 'true'
@@ -84,8 +94,14 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: 仅保留目标文件
+        run: |
+          cd dist
+          rm -f build.log */build.log
+          find . -maxdepth 1 -name 'err-*' -prune -o -type f -print | xargs -r -n1 basename | head -50
+
       - name: 生成校验和
-        run: cd dist && sha256sum * > SHA256SUMS && ls -la
+        run: cd dist && ls -la && sha256sum $(find . -maxdepth 1 -type f ! -name 'SHA256SUMS') > SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:
