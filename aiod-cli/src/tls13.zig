@@ -18,6 +18,8 @@
 //! 调试输出默认关闭；`AIO_TLS_DEBUG=1` 打开。证书：默认做主机名校验 +
 //! CertificateVerify 验签；完整链验证暂未实现（失败时给出明确错误）。
 const std = @import("std");
+const builtin = @import("builtin");
+const linux = std.os.linux;
 const mem = std.mem;
 
 const Sha256 = std.crypto.hash.sha2.Sha256;
@@ -109,7 +111,9 @@ pub const Stream = struct {
 
 // ============================== raw syscalls ==============================
 
-
+fn isErr(rc: usize) bool {
+    return linux.errno(rc) != .SUCCESS;
+}
 
 // ============================== AEAD plumbing ==============================
 
@@ -398,8 +402,13 @@ fn hex(b: []const u8) void {
 // ============================== ClientHello ==============================
 
 fn randBytes(b: []u8) !void {
-    // 跨平台熵源：Linux 走 getrandom，macOS 走 arc4random（由 std 内部选路）。
-    std.crypto.random.bytes(b);
+    // 跨平台熵源：Linux 用 getrandom，macOS 用 arc4random_buf。
+    if (builtin.os.tag == .linux) {
+        const rc = linux.getrandom(b.ptr, b.len, 0);
+        if (linux.errno(rc) != .SUCCESS or rc != b.len) return error.NoEntropy;
+    } else {
+        std.c.arc4random_buf(b.ptr, b.len);
+    }
 }
 
 const SIG_SCHEMES = [_]u16{
