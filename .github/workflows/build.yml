@@ -58,6 +58,10 @@ jobs:
           set -o pipefail
           zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} 2>&1 | tee build.log
 
+      - name: 失败时在终端打印构建日志
+        if: failure() && steps.probe.outputs.exists == 'true'
+        run: cat ${{ matrix.tool }}/build.log
+
       - name: 失败时上传构建日志
         if: failure() && steps.probe.outputs.exists == 'true'
         uses: actions/upload-artifact@v4
