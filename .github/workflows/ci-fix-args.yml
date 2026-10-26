@@ -1,0 +1,56 @@
+name: ci-fix-args
+
+on:
+  push:
+    branches: [ci/platform-matrix]
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 改用 Args.Iterator 取参数
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          NEW = """    var arg_storage: [256][]const u8 = undefined;
+              var arg_count: usize = 0;
+              var arg_it = try std.process.Args.Iterator.initAllocator(init.args, gpa);
+              defer arg_it.deinit();
+              while (arg_it.next()) |a| {
+                  if (arg_count == arg_storage.len) break;
+                  arg_storage[arg_count] = a;
+                  arg_count += 1;
+              }
+              const argv: []const []const u8 = arg_storage[0..arg_count];
+              if (argv.len < 2) {
+                  try help.printTop(out);
+                  return;
+              }
+          """
+
+          PAT = re.compile(r"    const (?:argv_raw|raw) = init\.args\.vector;[\s\S]*?std\.mem\.span\(a\);\n    }\n")
+
+          for rel in ("cube-cli/src/main.zig", "aiod-cli/src/main.zig"):
+              p = pathlib.Path(rel)
+              s = p.read_text()
+              if "Args.Iterator" in s:
+                  continue
+              s2 = PAT.sub(NEW, s, count=1)
+              if s2 == s:
+                  sys.exit("pattern miss: " + rel)
+              s2 = s2.replace('const std = @import("std");\nconst builtin = @import("builtin");\n', 'const std = @import("std");\n', 1)
+              p.write_text(s2)
+          print("ok")
+          PY
+          grep -n 'arg_it = try' cube-cli/src/main.zig aiod-cli/src/main.zig
+          rm -f .github/workflows/ci-fix-args.yml .github/workflows/ci-probe-args2.yml .github/workflows/ci-probe-args3.yml ci/probe-trigger4 ci/probe-trigger5
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(cli): 参数改用 std.process.Args.Iterator（Windows 下 args.vector 是 WTF-16 缓冲）"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
