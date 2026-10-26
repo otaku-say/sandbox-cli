@@ -37,13 +37,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const out = &stdout_w.interface;
     defer out.flush() catch {};
 
-    const raw = init.args.vector;
-    if (raw.len < 2) {
+    var arg_storage: [256][]const u8 = undefined;
+    var arg_count: usize = 0;
+    var arg_it = try std.process.Args.Iterator.initAllocator(init.args, gpa);
+    defer arg_it.deinit();
+    while (arg_it.next()) |a| {
+        if (arg_count == arg_storage.len) break;
+        arg_storage[arg_count] = a;
+        arg_count += 1;
+    }
+    const argv: []const []const u8 = arg_storage[0..arg_count];
+    if (argv.len < 2) {
         try help.printTop(out);
         return;
     }
-    const argv = try arena.alloc([]const u8, raw.len);
-    for (raw, 0..) |a, i| argv[i] = std.mem.span(a);
 
     const cmd = argv[1];
     const rest = argv[2..];
