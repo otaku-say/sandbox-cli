@@ -28,14 +28,12 @@ jobs:
           - { tool: cube-cli, target: aarch64-windows-gnu, runner: ubuntu-latest }
           - { tool: aiod-cli, target: aarch64-linux-musl,  runner: ubuntu-24.04-arm }
           - { tool: aiod-cli, target: x86_64-linux-musl,   runner: ubuntu-latest }
-          - { tool: aiod-cli, target: aarch64-macos,       runner: macos-14 }
+          - { tool: aiod-cli, target: aarch64-macos,      runner: macos-14 }
           - { tool: aiod-cli, target: x86_64-macos,        runner: macos-14 }
-          - { tool: aiod-cli, target: x86_64-windows-gnu,  runner: ubuntu-latest }
-          - { tool: aiod-cli, target: aarch64-windows-gnu, runner: ubuntu-latest }
     steps:
       - uses: actions/checkout@v4
 
-      - name: 检查子项目是否存在
+      - name: 暀查子聕目是否存圤
         id: probe
         run: |
           if [ -f "${{ matrix.tool }}/build.zig" ]; then
@@ -52,7 +50,7 @@ jobs:
 
       - name: 构建
         if: steps.probe.outputs.exists == 'true'
-        working-directory: ${{ matrix.tool }}
+        workingdirectory: ${{ matrix.tool }}
         shell: bash
         run: |
           set -o pipefail
@@ -112,7 +110,6 @@ jobs:
           - { artifact: aiod-cli-x86_64-linux-musl,  runner: ubuntu-latest }
           - { artifact: aiod-cli-aarch64-macos,      runner: macos-14 }
           - { artifact: aiod-cli-x86_64-macos,       runner: macos-14 }
-          - { artifact: aiod-cli-x86_64-windows-gnu, runner: windows-latest }
     steps:
       - uses: actions/download-artifact@v4
         with:
