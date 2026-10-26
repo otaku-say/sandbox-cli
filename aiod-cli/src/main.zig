@@ -3,7 +3,6 @@
 //! 约定：所有部署相关取值通过环境变量传入（SANDBOX_BASE / SANDBOX_KEY），
 //! 仓库内不含任何主机名、IP 或凭据。
 const std = @import("std");
-const builtin = @import("builtin");
 const netfix = @import("netfix.zig");
 const cfg = @import("cfg.zig");
 const ctxmod = @import("ctx.zig");
@@ -38,17 +37,19 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const out = &stdout_w.interface;
     defer out.flush() catch {};
 
-    const raw = init.args.vector;
-    if (raw.len < 2) {
+    var arg_storage: [256][]const u8 = undefined;
+    var arg_count: usize = 0;
+    var arg_it = try std.process.Args.Iterator.initAllocator(init.args, gpa);
+    defer arg_it.deinit();
+    while (arg_it.next()) |a| {
+        if (arg_count == arg_storage.len) break;
+        arg_storage[arg_count] = a;
+        arg_count += 1;
+    }
+    const argv: []const []const u8 = arg_storage[0..arg_count];
+    if (argv.len < 2) {
         try help.printTop(out);
         return;
-    }
-    const argv = try arena.alloc([]const u8, raw.len);
-    for (raw, 0..) |a, i| {
-        argv[i] = if (comptime builtin.os.tag == .windows)
-            try std.unicode.wtf16LeToWtf8Alloc(arena, a[0..std.mem.len(a)])
-        else
-            std.mem.span(a);
     }
 
     const cmd = argv[1];

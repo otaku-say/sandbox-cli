@@ -5,7 +5,6 @@
 //!   CUBESANDBOX_API_KEY    控制面 API Key
 //!   CUBESANDBOX_PROXY_URL  数据面网关（exec 等沙箱内操作需要）
 const std = @import("std");
-const builtin = @import("builtin");
 const netfix = @import("netfix.zig");
 const cfg = @import("cfg.zig");
 const httpc = @import("httpc.zig");
@@ -51,17 +50,19 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const out = &stdout_w.interface;
     defer out.flush() catch {};
 
-    const argv_raw = init.args.vector;
-    if (argv_raw.len < 2) {
+    var arg_storage: [256][]const u8 = undefined;
+    var arg_count: usize = 0;
+    var arg_it = try std.process.Args.Iterator.initAllocator(init.args, gpa);
+    defer arg_it.deinit();
+    while (arg_it.next()) |a| {
+        if (arg_count == arg_storage.len) break;
+        arg_storage[arg_count] = a;
+        arg_count += 1;
+    }
+    const argv: []const []const u8 = arg_storage[0..arg_count];
+    if (argv.len < 2) {
         try help.printTop(out);
         return;
-    }
-    const argv = try arena.alloc([]const u8, argv_raw.len);
-    for (argv_raw, 0..) |a, i| {
-        argv[i] = if (comptime builtin.os.tag == .windows)
-            try std.unicode.wtf16LeToWtf8Alloc(arena, a[0..std.mem.len(a)])
-        else
-            std.mem.span(a);
     }
     const cmd = argv[1];
     const args = argv[2..];
